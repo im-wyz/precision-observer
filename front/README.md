@@ -1,20 +1,31 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Frontend
 
-# Run and deploy your AI Studio app
+React + Vite workspace for the Precision Observer map UI.
 
-This contains everything you need to run your app locally.
+## Run
 
-View your app in AI Studio: https://ai.studio/apps/d183f9d7-4cab-423b-9955-82fc095ae844
+From the repo root:
 
-## Run Locally
+```powershell
+.\scripts\dev.cmd -Only web
+```
 
-**Prerequisites:**  Node.js
+Manual run:
 
+```powershell
+cd front
+copy .env.example .env
+npm install
+npm run dev
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The app runs at `http://localhost:3000`.
+
+## Important Env
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_RASTER_API_URL` | `http://localhost:8080` | Spring Boot API base URL |
+| `VITE_TITILER_URL` | `http://localhost:8000` | TiTiler base URL |
+| `VITE_TITILER_USE_PROXY` | enabled unless set to `false` | Use Vite proxy for tile requests |
+| `VITE_WS_URL` | `http://localhost:8080` | WebSocket backend when not using proxy |

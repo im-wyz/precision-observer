@@ -339,7 +339,9 @@ public class LiveImageryService {
             for (Candidate c : selected) {
                 urls.add(c.cogUrl);
                 footprints.add(geometryToRingsLngLat(c.footprint));
-                scenes.add(new SelectedScene(c.itemId, c.collection, c.datetime, c.assetKey, c.cloudCover, c.cogUrl));
+                scenes.add(new SelectedScene(
+                        c.itemId, c.collection, c.datetime, c.assetKey, c.cloudCover, c.cogUrl, c.redCogUrl, c.nirCogUrl
+                ));
             }
             return new FootprintSelection(urls, footprints, scenes, selected, coverageRatio);
         } catch (InterruptedException e) {
@@ -360,6 +362,8 @@ public class LiveImageryService {
             String assetKey,
             String cogUrl,
             double cloudCover,
+            String redCogUrl,
+            String nirCogUrl,
             Geometry footprint
     ) {
     }
@@ -378,6 +382,8 @@ public class LiveImageryService {
         for (JsonNode feature : features) {
             AssetRef assetRef = extractCogAsset(feature.path("assets"));
             if (assetRef == null || assetRef.href == null || assetRef.href.isBlank()) continue;
+            String redCogUrl = extractAssetHref(feature.path("assets"), "B04", "b04", "red");
+            String nirCogUrl = extractAssetHref(feature.path("assets"), "B08", "b08", "nir");
 
             Geometry footprint = geoJsonToGeometry(feature.path("geometry"));
             if (footprint == null || footprint.isEmpty()) continue;
@@ -400,6 +406,8 @@ public class LiveImageryService {
                     assetRef.assetKey,
                     assetRef.href,
                     cloudCover,
+                    redCogUrl,
+                    nirCogUrl,
                     footprint
             ));
         }
@@ -834,6 +842,17 @@ public class LiveImageryService {
         return s + "T00:00:00Z/" + e + "T23:59:59Z";
     }
 
+    private static String extractAssetHref(JsonNode assets, String... keys) {
+        if (assets == null || !assets.isObject() || keys == null) return null;
+        for (String key : keys) {
+            JsonNode href = assets.path(key).path("href");
+            if (!href.isMissingNode() && !href.asText().isBlank()) {
+                return href.asText();
+            }
+        }
+        return null;
+    }
+
     private List<List<LngLat>> districtBoundaryByAmap(String query) {
         try {
             String url = amapDistrictUrl +
@@ -941,7 +960,9 @@ public class LiveImageryService {
             String datetime,
             String assetKey,
             double cloudCover,
-            String cogUrl
+            String cogUrl,
+            String redCogUrl,
+            String nirCogUrl
     ) {
     }
 

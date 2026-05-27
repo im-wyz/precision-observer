@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "inputs": [
+    { "type": "WorkflowImage", "name": "image" },
+    {
+      "type": "WorkflowParameter",
+      "name": "instruction",
+      "default_value": "building, road, water, farmland, forest, vehicle, ship"
+    },
+    { "type": "WorkflowParameter", "name": "pixels_per_unit", "default_value": 1 }
+  ],
+  "steps": [
+    {
+      "type": "roboflow_core/sam3@v3",
+      "name": "sam3_segmentation",
+      "images": "$inputs.image",
+      "model_id": "sam3/sam3_final",
+      "class_names": "$inputs.instruction",
+      "output_format": "polygons",
+      "confidence": 0.3
+    },
+    {
+      "type": "roboflow_core/mask_area_measurement@v1",
+      "name": "area_measurement",
+      "predictions": "$steps.sam3_segmentation.predictions",
+      "pixels_per_unit": "$inputs.pixels_per_unit"
+    },
+    {
+      "type": "roboflow_core/property_definition@v1",
+      "name": "count_total",
+      "data": "$steps.area_measurement.predictions",
+      "operations": [{ "type": "SequenceLength" }]
+    },
+    {
+      "type": "roboflow_core/polygon_visualization@v2",
+      "name": "polygon_viz",
+      "image": "$inputs.image",
+      "predictions": "$steps.area_measurement.predictions",
+      "copy_image": true,
+      "thickness": 1
+    }
+  ],
+  "outputs": [
+    {
+      "type": "JsonField",
+      "name": "polygon_clean",
+      "selector": "$steps.polygon_viz.image"
+    },
+    {
+      "type": "JsonField",
+      "name": "total_count",
+      "selector": "$steps.count_total.output"
+    },
+    {
+      "type": "JsonField",
+      "name": "predictions_with_area",
+      "selector": "$steps.area_measurement.predictions"
+    }
+  ],
+  "metadata": {
+    "ui": {
+      "nodes": {
+        "$inputs": { "x": 748, "y": 0 },
+        "$steps.sam3_segmentation": { "x": 748, "y": 312 },
+        "$steps.area_measurement": { "x": 748, "y": 463 },
+        "$steps.count_total": { "x": 500, "y": 604 },
+        "$steps.polygon_viz": { "x": 996, "y": 604 },
+        "$outputs": { "x": 748, "y": 745 }
+      },
+      "edges": [
+        {
+          "source": "$inputs",
+          "target": "$steps.sam3_segmentation",
+          "inputProperty": "images",
+          "sourceSelector": "image"
+        },
+        {
+          "source": "$steps.sam3_segmentation",
+          "target": "$steps.area_measurement",
+          "inputProperty": "predictions",
+          "sourceSelector": "predictions"
+        },
+        {
+          "source": "$steps.area_measurement",
+          "target": "$steps.count_total",
+          "inputProperty": "data",
+          "sourceSelector": "predictions"
+        },
+        {
+          "source": "$steps.area_measurement",
+          "target": "$steps.polygon_viz",
+          "inputProperty": "predictions",
+          "sourceSelector": "predictions"
+        },
+        {
+          "source": "$steps.polygon_viz",
+          "target": "$outputs",
+          "sourceSelector": "image"
+        },
+        {
+          "source": "$steps.count_total",
+          "target": "$outputs",
+          "sourceSelector": "output"
+        },
+        {
+          "source": "$steps.area_measurement",
+          "target": "$outputs",
+          "sourceSelector": "predictions"
+        }
+      ],
+      "groups": []
+    }
+  }
+}

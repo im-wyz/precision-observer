@@ -1,0 +1,46 @@
+# 本地环境变量与密钥
+.env
+.env.*
+!.env.example
+agent-api/.env
+front/.env
+back/raster-api/src/main/resources/application-local.properties
+secrets/*.json
+!secrets/*.example.json
+!secrets/gee-service-account.json.example
+!secrets/README.md
+
+# Python 运行产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node / 前端产物
+node_modules/
+front/node_modules/
+front/dist/
+dist/
+
+# Java / Spring 产物
+target/
+back/raster-api/target/
+
+# 本地数据与生成结果
+agent-api/data/gee_exports/
+uploads/
+*.log
+
+# IDE 与操作系统杂项
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 实验时复制到仓库旁的本地原生库
+jzmq.dll
+libzmq-mt-*.dll

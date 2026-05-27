@@ -1,0 +1,156 @@
+# 本地开发基础设施：PostgreSQL、Redis、MinIO 和 MCP SSE 服务。
+# 推荐在仓库根目录通过 scripts/dev.cmd 启动，也可手动执行：
+# docker-compose -f docker/docker-compose.yml up -d --build
+# TiTiler 提供 COG 动态瓦片服务，浏览器访问 http://localhost:8000。
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: gis_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "123456"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/precision-observer || true &&
+      mc anonymous set download local/precision-observer || true
+      "
+    restart: "no"
+
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    command: uvicorn titiler.application.main:app --host 0.0.0.0 --port 8000 --workers 1
+    ports:
+      - "8000:8000"
+    environment:
+      CPL_VSIL_CURL_ALLOWED_EXTENSIONS: ".tif,.tiff,.vrt"
+      GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mcp-gee:
+    build:
+      context: ..
+      dockerfile: mcp-servers/gee/Dockerfile
+    ports:
+      - "8101:8101"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8101"
+      GEE_CREDENTIALS_PATH: /secrets/gee-service-account.json
+      GEE_OUTPUT_DIR: /data/gee_exports
+      GEE_UPLOAD_MINIO: "true"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_BASE: http://host.docker.internal:9000
+      TITILER_COG_FETCH_BASE: http://host.docker.internal:9000
+      TITILER_BASE_URL: http://127.0.0.1:8000
+    volumes:
+      - ../secrets:/secrets:ro
+      - gee_exports:/data/gee_exports
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - minio
+      - titiler
+
+  mcp-gdal:
+    build:
+      context: ..
+      dockerfile: mcp-servers/gdal/Dockerfile
+    ports:
+      - "8102:8102"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8102"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: precision-observer
+      MINIO_SECURE: "false"
+    depends_on:
+      - minio
+
+  mcp-raster:
+    build:
+      context: ..
+      dockerfile: mcp-servers/raster/Dockerfile
+    ports:
+      - "8103:8103"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8103"
+      TITILER_PUBLIC_BASE_URL: http://127.0.0.1:8000
+      TITILER_INTERNAL_URL: http://titiler:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - titiler
+
+  mcp-storage:
+    build:
+      context: ..
+      dockerfile: mcp-servers/storage/Dockerfile
+    ports:
+      - "8104:8104"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8104"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: precision-observer
+      MINIO_SECURE: "false"
+      MINIO_PUBLIC_BASE: http://127.0.0.1:9000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: gis_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "123456"
+    depends_on:
+      - minio
+      - postgres
+
+  mcp-inference:
+    build:
+      context: ..
+      dockerfile: mcp-servers/inference/Dockerfile
+    ports:
+      - "8105:8105"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8105"
+      SPRING_API_BASE_URL: http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
+  minio_data:
+  gee_exports:

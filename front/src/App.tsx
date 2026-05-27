@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
@@ -16,29 +16,61 @@ export type ViewType = 'workspace' | 'resources' | 'models' | 'analytics';
 
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>('workspace');
+  const [pendingWorkspaceSessionId, setPendingWorkspaceSessionId] = useState<string | null>(null);
+  const [newWorkspaceNonce, setNewWorkspaceNonce] = useState(0);
+
+  const onWorkspaceSessionPendingConsumed = useCallback(() => {
+    setPendingWorkspaceSessionId(null);
+  }, []);
+
+  const startBlankWorkspace = useCallback(() => {
+    setPendingWorkspaceSessionId(null);
+    setActiveView('workspace');
+    setNewWorkspaceNonce((n) => n + 1);
+  }, []);
 
   const renderView = () => {
     switch (activeView) {
       case 'workspace':
-        return <AIWorkspace key="workspace" />;
+        return (
+          <AIWorkspace
+            pendingSessionId={pendingWorkspaceSessionId}
+            onPendingSessionConsumed={onWorkspaceSessionPendingConsumed}
+            newWorkspaceNonce={newWorkspaceNonce}
+          />
+        );
       case 'resources':
-        return <ResourceLibrary key="resources" />;
+        return (
+          <ResourceLibrary
+            onOpenWorkspaceSession={(id) => {
+              setPendingWorkspaceSessionId(id);
+              setActiveView('workspace');
+            }}
+            onCreateWorkspace={startBlankWorkspace}
+          />
+        );
       case 'models':
         return <ModelLibrary key="models" />;
       case 'analytics':
         return <BusinessLibrary key="analytics" />;
       default:
-        return <AIWorkspace key="workspace" />;
+        return (
+          <AIWorkspace
+            pendingSessionId={pendingWorkspaceSessionId}
+            onPendingSessionConsumed={onWorkspaceSessionPendingConsumed}
+            newWorkspaceNonce={newWorkspaceNonce}
+          />
+        );
     }
   };
 
   return (
     <div className="flex h-screen bg-background text-on-surface overflow-hidden font-sans">
       <Header activeView={activeView} onViewChange={setActiveView} />
-      
+
       <div className="flex flex-1 pt-12 overflow-hidden">
-        <Sidebar activeView={activeView} onViewChange={setActiveView} />
-        
+        <Sidebar activeView={activeView} onViewChange={setActiveView} onStartNewWorkspace={startBlankWorkspace} />
+
         <main className="flex-1 ml-64 overflow-hidden relative">
           <AnimatePresence mode="wait">
             <motion.div

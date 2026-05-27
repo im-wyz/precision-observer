@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "Inspector 轻量 JSON 规则（LLM 验收之外的硬校验）",
+  "rules": [
+    {
+      "id": "require_engineer_ok",
+      "when": { "engineer_ok": false },
+      "fail": true,
+      "message": "Engineer 未成功完成分析"
+    },
+    {
+      "id": "require_report",
+      "when": { "missing_fields": ["report_summary"] },
+      "fail": true,
+      "message": "缺少 report_summary"
+    },
+    {
+      "id": "gcs_async_warning",
+      "when": { "download_url_contains": "gs://" },
+      "fail": false,
+      "message": "COG 在 GCS 异步导出中，需同步到 MinIO/本地后 TiTiler 才能切片"
+    }
+  ]
+}

@@ -4,9 +4,11 @@ import { ViewType } from '../App';
 interface SidebarProps {
   activeView: ViewType;
   onViewChange: (view: ViewType) => void;
+  /** 新建空白工作区：切到 Workspace 并重置对话与地图 */
+  onStartNewWorkspace?: () => void;
 }
 
-export default function Sidebar({ activeView, onViewChange }: SidebarProps) {
+export default function Sidebar({ activeView, onViewChange, onStartNewWorkspace }: SidebarProps) {
   const menuItems = [
     { id: 'workspace', label: 'AI Workspace', icon: LayoutGrid },
     { id: 'resources', label: 'Resource Library', icon: Database },
@@ -28,9 +30,13 @@ export default function Sidebar({ activeView, onViewChange }: SidebarProps) {
         </div>
       </div>
 
-      <button className="w-full py-2 bg-indigo-600 text-white font-headline font-bold rounded-md flex items-center justify-center gap-2 hover:bg-indigo-500 active:scale-95 transition-all mb-4 shadow-sm">
+      <button
+        type="button"
+        onClick={() => onStartNewWorkspace?.()}
+        className="w-full py-2 bg-indigo-600 text-white font-headline font-bold rounded-md flex items-center justify-center gap-2 hover:bg-indigo-500 active:scale-95 transition-all mb-4 shadow-sm"
+      >
         <Plus className="w-4 h-4" />
-        <span>New Analysis</span>
+        <span>新建遥感分析</span>
       </button>
 
       <nav className="flex-1 flex flex-col gap-0.5 px-1">
