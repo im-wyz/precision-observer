@@ -44,16 +44,26 @@ public class LiveImageryService {
     private final String amapDistrictUrl;
     private final String amapKey;
     private final String stacSearchUrl;
+    private final String agentBaseUrl;
+    private final String imageryProvider;
+    private final boolean stacFallback;
     private final Duration timeout;
+    private final Duration geeTimeout;
     private final double minCoverageRatio;
+    private final LocalImageryArchiveService localImageryArchiveService;
 
     public LiveImageryService(
             @Value("${live.amap.geocode-url:https://restapi.amap.com/v3/geocode/geo}") String amapGeocodeUrl,
             @Value("${live.amap.district-url:https://restapi.amap.com/v3/config/district}") String amapDistrictUrl,
             @Value("${live.amap.key:}") String amapKey,
             @Value("${live.stac.search-url:https://earth-search.aws.element84.com/v1/search}") String stacSearchUrl,
+            @Value("${agent.base-url:http://127.0.0.1:8001}") String agentBaseUrl,
+            @Value("${live.imagery.provider:gee}") String imageryProvider,
+            @Value("${live.imagery.stac-fallback:false}") boolean stacFallback,
             @Value("${live.http-timeout-ms:12000}") long timeoutMs,
-            @Value("${live.coverage-min-ratio:0.995}") double minCoverageRatio
+            @Value("${live.gee-timeout-ms:600000}") long geeTimeoutMs,
+            @Value("${live.coverage-min-ratio:0.995}") double minCoverageRatio,
+            LocalImageryArchiveService localImageryArchiveService
     ) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(timeoutMs))
@@ -62,11 +72,34 @@ public class LiveImageryService {
         this.amapDistrictUrl = amapDistrictUrl;
         this.amapKey = amapKey;
         this.stacSearchUrl = stacSearchUrl;
+        this.agentBaseUrl = agentBaseUrl;
+        this.imageryProvider = imageryProvider == null ? "gee" : imageryProvider.trim().toLowerCase();
+        this.stacFallback = stacFallback;
         this.timeout = Duration.ofMillis(timeoutMs);
+        this.geeTimeout = Duration.ofMillis(geeTimeoutMs);
         this.minCoverageRatio = Math.max(0.0, Math.min(1.0, minCoverageRatio));
+        this.localImageryArchiveService = localImageryArchiveService;
     }
 
     public LiveImageryResult queryByPlaceName(String placeName, LocalDate startDate, LocalDate endDate) {
+        return queryByPlaceName(placeName, startDate, endDate, imageryProvider, stacFallback);
+    }
+
+    public LiveImageryResult queryByPlaceNameForBandAnalysis(String placeName, LocalDate startDate, LocalDate endDate) {
+        return queryByPlaceName(placeName, startDate, endDate, "local_stac", false);
+    }
+
+    public LiveImageryResult queryByPlaceNameForCroplandCompare(String placeName, LocalDate startDate, LocalDate endDate) {
+        return queryByPlaceName(placeName, startDate, endDate, "local_gee", false);
+    }
+
+    private LiveImageryResult queryByPlaceName(
+            String placeName,
+            LocalDate startDate,
+            LocalDate endDate,
+            String provider,
+            boolean allowStacFallback
+    ) {
         String query = placeName == null ? "" : placeName.trim();
         if (query.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "地名不能为空");
@@ -77,7 +110,6 @@ public class LiveImageryService {
 
         List<List<LngLat>> boundaries = districtBoundaryByAmap(query);
         Bbox geocodeBbox = geocodeByAmap(query);
-        // 关键：影像检索范围以“行政区边界”外包框为准（而不是地名 geocode 的小框）
         Bbox searchBbox = computeBboxFromBoundaries(geocodeBbox.displayName, boundaries);
         if (searchBbox == null) {
             searchBbox = geocodeBbox;
@@ -88,6 +120,31 @@ public class LiveImageryService {
             admin = bboxToPolygon(searchBbox);
         } else {
             admin = fixGeometry(admin);
+        }
+
+        if ("local_stac".equals(provider)) {
+            try {
+                return queryLocalArchiveBandAnalysis(query, geocodeBbox.displayName, searchBbox, startDate, endDate, boundaries);
+            } catch (ResponseStatusException ignored) {
+            }
+        }
+
+        if ("local_gee".equals(provider) || "local".equals(provider)) {
+            try {
+                return queryLocalArchiveTrueColor(query, geocodeBbox.displayName, searchBbox, startDate, endDate, boundaries);
+            } catch (ResponseStatusException e) {
+                return queryGeeTrueColor(query, geocodeBbox.displayName, searchBbox, startDate, endDate, boundaries);
+            }
+        }
+
+        if ("gee".equals(provider)) {
+            try {
+                return queryGeeTrueColor(query, geocodeBbox.displayName, searchBbox, startDate, endDate, boundaries);
+            } catch (ResponseStatusException e) {
+                if (!allowStacFallback) {
+                    throw e;
+                }
+            }
         }
 
         FootprintSelection selection = searchCogsByStac(searchBbox, admin, startDate, endDate);
@@ -106,6 +163,173 @@ public class LiveImageryService {
                 coverageRatio,
                 boundaries
         );
+    }
+
+    private LiveImageryResult queryLocalArchiveBandAnalysis(
+            String query,
+            String displayName,
+            Bbox bbox,
+            LocalDate startDate,
+            LocalDate endDate,
+            List<List<LngLat>> boundaries
+    ) {
+        LocalImageryArchiveService.LocalArchiveMatch match = localImageryArchiveService.findBestBandMatch(query, startDate, endDate)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "本地影像库未命中 B04/B08 波段影像"));
+        String cogUrl = localImageryArchiveService.buildCogHttpUrl(match.fileName());
+        String start = startDate == null ? String.valueOf(match.year()) : startDate.toString();
+        String end = endDate == null ? String.valueOf(match.year()) : endDate.toString();
+        String lowerFileName = match.fileName().toLowerCase();
+        String assetKey = lowerFileName.contains("multiband") ? "s2_sr_multiband" : "B04_B08";
+        SelectedScene scene = new SelectedScene(
+                "local-band-" + match.fileName(),
+                "local-archive",
+                start + "/" + end,
+                assetKey,
+                0.0,
+                cogUrl,
+                cogUrl + "|bidx=1",
+                cogUrl + "|bidx=2"
+        );
+        return new LiveImageryResult(
+                query,
+                displayName,
+                bbox.minLng,
+                bbox.minLat,
+                bbox.maxLng,
+                bbox.maxLat,
+                List.of(cogUrl),
+                List.of(),
+                List.of(scene),
+                1.0,
+                boundaries
+        );
+    }
+
+    private LiveImageryResult queryLocalArchiveTrueColor(
+            String query,
+            String displayName,
+            Bbox bbox,
+            LocalDate startDate,
+            LocalDate endDate,
+            List<List<LngLat>> boundaries
+    ) {
+        LocalImageryArchiveService.LocalArchiveMatch match = localImageryArchiveService.findBestBandMatch(query, startDate, endDate)
+                .or(() -> localImageryArchiveService.findBestMatch(query, startDate, endDate))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "本地影像库未命中"));
+        String cogUrl = localImageryArchiveService.buildCogHttpUrl(match.fileName());
+        String lowerFileName = match.fileName().toLowerCase();
+        if (lowerFileName.contains("multiband")) {
+            // 本地多波段顺序：b1=B4, b2=B8, b3=B2, b4=B3；预览按 B4/B3/B2 渲染真彩色。
+            cogUrl += "|params=bidx=1&bidx=4&bidx=3&rescale=0,3000";
+        }
+        String start = startDate == null ? String.valueOf(match.year()) : startDate.toString();
+        String end = endDate == null ? String.valueOf(match.year()) : endDate.toString();
+        SelectedScene scene = new SelectedScene(
+                "local-" + match.fileName(),
+                "local-archive",
+                start + "/" + end,
+                "true_color",
+                0.0,
+                cogUrl,
+                "",
+                ""
+        );
+        return new LiveImageryResult(
+                query,
+                displayName,
+                bbox.minLng,
+                bbox.minLat,
+                bbox.maxLng,
+                bbox.maxLat,
+                List.of(cogUrl),
+                List.of(),
+                List.of(scene),
+                1.0,
+                boundaries
+        );
+    }
+
+    private LiveImageryResult queryGeeTrueColor(
+            String query,
+            String displayName,
+            Bbox bbox,
+            LocalDate startDate,
+            LocalDate endDate,
+            List<List<LngLat>> boundaries
+    ) {
+        DateRange range = normalizeDateRange(startDate, endDate);
+        try {
+            ObjectNode body = OBJECT_MAPPER.createObjectNode();
+            body.put("message", "影像对比：" + query);
+            ArrayNode coords = body.putArray("region_coords");
+            coords.add(bbox.minLng).add(bbox.minLat).add(bbox.maxLng).add(bbox.maxLat);
+            body.put("start_date", range.start().toString());
+            body.put("end_date", range.end().toString());
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(agentBaseUrl.replaceAll("/$", "") + "/gee/true-color"))
+                    .timeout(geeTimeout)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, readErrorMessage(response.body(), "GEE 影像导出失败"));
+            }
+
+            JsonNode root = OBJECT_MAPPER.readTree(response.body());
+            String cogUrl = root.path("download_url").asText("");
+            if (cogUrl.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GEE 未返回可切片影像 URL");
+            }
+
+            SelectedScene scene = new SelectedScene(
+                    "gee-" + range.start() + "-" + range.end(),
+                    "COPERNICUS/S2_SR_HARMONIZED",
+                    range.start() + "/" + range.end(),
+                    "true_color",
+                    0.0,
+                    cogUrl,
+                    "",
+                    ""
+            );
+            return new LiveImageryResult(
+                    query,
+                    displayName,
+                    bbox.minLng,
+                    bbox.minLat,
+                    bbox.maxLng,
+                    bbox.maxLat,
+                    List.of(cogUrl),
+                    List.of(),
+                    List.of(scene),
+                    1.0,
+                    boundaries
+            );
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GEE 影像导出请求被中断", e);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GEE 影像导出响应解析失败", e);
+        }
+    }
+
+    private static String readErrorMessage(String body, String fallback) {
+        if (body == null || body.isBlank()) return fallback;
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(body);
+            String detail = root.path("detail").asText("");
+            if (!detail.isBlank()) return detail;
+            String message = root.path("message").asText("");
+            if (!message.isBlank()) return message;
+        } catch (Exception ignored) {
+            return body.length() > 500 ? body.substring(0, 500) : body;
+        }
+        return fallback;
     }
 
     private Bbox geocodeByAmap(String query) {
@@ -177,7 +401,6 @@ public class LiveImageryService {
                     double swLat = Double.parseDouble(sw[1]);
                     double neLng = Double.parseDouble(ne[0]);
                     double neLat = Double.parseDouble(ne[1]);
-                    // AMap is GCJ-02 -> convert to WGS84
                     Gcj02Wgs84.LngLat swWgs = Gcj02Wgs84.gcj02ToWgs84(swLng, swLat);
                     Gcj02Wgs84.LngLat neWgs = Gcj02Wgs84.gcj02ToWgs84(neLng, neLat);
                     minLng = Math.min(swWgs.lng(), neWgs.lng());
@@ -195,7 +418,6 @@ public class LiveImageryService {
                     }
                     double lng = Double.parseDouble(lonLat[0]);
                     double lat = Double.parseDouble(lonLat[1]);
-                    // AMap is GCJ-02 -> convert to WGS84
                     Gcj02Wgs84.LngLat center = Gcj02Wgs84.gcj02ToWgs84(lng, lat);
                     double delta = 0.35;
                     minLng = center.lng() - delta;
@@ -205,7 +427,6 @@ public class LiveImageryService {
                 }
                 return new Bbox(formattedAddress, minLng, minLat, maxLng, maxLat);
             } catch (ResponseStatusException e) {
-                // 非引擎错误直接抛
                 throw e;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -219,7 +440,6 @@ public class LiveImageryService {
     }
 
     private FootprintSelection searchCogsByStac(Bbox bbox, Geometry admin, LocalDate startDate, LocalDate endDate) {
-        // 仅使用 Sentinel，避免与 Landsat 混合导致清晰度下降
         String[] collectionsToTry = {"sentinel-2-l2a", "sentinel-2-l1c"};
         double[] expandFactors = {1.0, 1.8, 3.0, 5.0};
         double centerLng = (bbox.minLng + bbox.maxLng) / 2.0;
@@ -227,8 +447,6 @@ public class LiveImageryService {
 
         ResponseStatusException lastError = null;
         Double bestCoverage = null;
-        // 注意：此处不再优先“中心点 intersects”提前返回
-        // 对于南京/北京这类行政区较大的情况，中心点命中的单景不一定覆盖全域边缘
         for (double factor : expandFactors) {
             Bbox searchBbox = expandBbox(bbox, factor);
             for (String collection : collectionsToTry) {
@@ -321,12 +539,10 @@ public class LiveImageryService {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该区域未找到可用遥感影像");
             }
 
-            // 新要求：覆盖判定只看 STAC footprint 几何是否覆盖行政边界（不看像素有效、不看云与空洞）
             Geometry adminFixed = (admin == null || admin.isEmpty()) ? bboxToPolygon(bbox) : admin;
             adminFixed = fixGeometry(adminFixed);
 
             List<Candidate> candidates = buildCandidatesWithFootprint(features, adminFixed, centerLng, centerLat);
-            // 需求：用最少景数完成“几何覆盖行政区”；优先同一时间段，其次再跨时间段补齐
             int maxCogs = Math.max(1, Math.min(50, candidates.size()));
             List<Candidate> selected = selectCandidatesByTimeBucketThenFootprintCover(candidates, adminFixed, maxCogs);
             if (selected.isEmpty()) {
@@ -391,7 +607,6 @@ public class LiveImageryService {
 
             TimeBucket bucket = parseTimeBucket(feature.path("properties").path("datetime").asText(""));
 
-            // 仅做候选排序用途：优先覆盖中心点 + footprint 与 admin 的交叠面积大
             boolean containsCenter = footprint.covers(GEOMETRY_FACTORY.createPoint(new Coordinate(centerLng, centerLat)));
             double overlap = safeArea(footprint.intersection(admin));
             double score = (containsCenter ? 1_000_000 : 0) + overlap;
@@ -419,13 +634,11 @@ public class LiveImageryService {
     }
 
     private static TimeBucket parseTimeBucket(String datetime) {
-        // STAC datetime 通常是 ISO-8601（UTC）。按“天”分桶满足“同一时间段”的最朴素定义。
         try {
             Instant instant = Instant.parse(datetime);
             LocalDate day = instant.atZone(ZoneOffset.UTC).toLocalDate();
             return new TimeBucket(day.toString(), day.toEpochDay());
         } catch (Exception e) {
-            // 缺失/异常时间：放到最旧桶，避免影响“优先最新时间段”
             return new TimeBucket("unknown", Long.MIN_VALUE);
         }
     }
@@ -437,7 +650,6 @@ public class LiveImageryService {
     ) {
         if (candidates.isEmpty()) return List.of();
 
-        // 按时间桶（epochDay）从新到旧遍历；每个桶内做 footprint cover 贪心，若能覆盖则立刻返回
         List<Long> buckets = new ArrayList<>();
         Set<Long> seenBuckets = new HashSet<>();
         for (Candidate c : candidates) {
@@ -465,7 +677,6 @@ public class LiveImageryService {
             List<Candidate> selected = selectCandidatesByFootprintCoverGreedy(inBucket, admin, maxCogs);
             double remaining = remainingAreaAfterSelection(admin, selected);
             if (remaining <= eps) {
-                // 在同一月份候选中，优先“更低云量”，其次“更少景数”，最后“更近日期”
                 double avgCloud = averageCloudCover(selected);
                 if (bestFullSameBucket == null
                         || avgCloud < bestFullSameBucketCloud
@@ -485,7 +696,6 @@ public class LiveImageryService {
             return bestFullSameBucket;
         }
 
-        // 同一时间段无法完整覆盖时，放宽到跨时间段，追求“最少景数的完整几何覆盖”
         List<Candidate> all = new ArrayList<>(candidates);
         all.sort((a, b) -> Double.compare(b.score, a.score));
         List<Candidate> crossBucket = selectCandidatesByFootprintCoverGreedy(all, admin, maxCogs);
@@ -494,7 +704,6 @@ public class LiveImageryService {
             return crossBucket;
         }
 
-        // 仍无法完整覆盖时，返回当前未覆盖最小方案（便于前端仍有可见结果）
         return bestSoFar.isEmpty() ? crossBucket : bestSoFar;
     }
 
@@ -591,7 +800,6 @@ public class LiveImageryService {
             JsonNode features = OBJECT_MAPPER.readTree(response.body()).path("features");
             if (!features.isArray() || features.isEmpty()) return null;
 
-            // 仅用于“点查询”的简易兜底：把 bbox 当作 admin
             Geometry admin = bboxToPolygon(cityBbox);
             List<Candidate> candidates = buildCandidatesWithFootprint(features, admin, centerLng, centerLat);
             return candidates.isEmpty() ? null : candidates.get(0);
@@ -613,7 +821,6 @@ public class LiveImageryService {
         Set<String> seen = new HashSet<>();
         Geometry union = null;
 
-        // 目标：footprint 几何覆盖行政边界（允许极小数值误差）
         double eps = adminArea * 1e-6;
 
         while (selected.size() < maxCogs) {
@@ -645,7 +852,6 @@ public class LiveImageryService {
             union = (union == null) ? best.footprint : union.union(best.footprint);
         }
 
-        // 至少返回 1 张（便于前端可见）
         if (selected.isEmpty()) {
             selected.add(candidates.get(0));
         }
@@ -696,7 +902,6 @@ public class LiveImageryService {
     private static Geometry fixGeometry(Geometry g) {
         if (g == null) return null;
         try {
-            // 常见：自交、多段边界导致 covers/difference 不稳定，用 buffer(0) 进行拓扑修复
             Geometry fixed = g.buffer(0);
             return fixed == null ? g : fixed;
         } catch (Exception e) {
@@ -758,7 +963,6 @@ public class LiveImageryService {
 
     private static Geometry geoJsonPolygon(JsonNode coordinates) {
         if (!coordinates.isArray() || coordinates.isEmpty()) return null;
-        // coordinates: [ [ [lon,lat], ... ] (shell), [ ... ] (holes)... ]
         LinearRing shell = geoJsonLinearRing(coordinates.get(0));
         if (shell == null) return null;
 
@@ -789,7 +993,6 @@ public class LiveImageryService {
             coords.add(new Coordinate(pt.get(0).asDouble(), pt.get(1).asDouble()));
         }
         if (coords.size() < 3) return null;
-        // ensure closed
         Coordinate first = coords.get(0);
         Coordinate last = coords.get(coords.size() - 1);
         if (first.x != last.x || first.y != last.y) {
@@ -817,7 +1020,6 @@ public class LiveImageryService {
     private static AssetRef extractCogAsset(JsonNode assets) {
         if (assets == null || !assets.isObject()) return null;
 
-        // 分析优先：尽量避免 preview 资产
         String[] preferred = {"visual", "true_color"};
         for (String key : preferred) {
             JsonNode href = assets.path(key).path("href");
@@ -840,6 +1042,15 @@ public class LiveImageryService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "结束日期不能早于开始日期");
         }
         return s + "T00:00:00Z/" + e + "T23:59:59Z";
+    }
+
+    private static DateRange normalizeDateRange(LocalDate startDate, LocalDate endDate) {
+        LocalDate end = endDate == null ? LocalDate.now(ZoneOffset.UTC) : endDate;
+        LocalDate start = startDate == null ? end.minusDays(30) : startDate;
+        if (end.isBefore(start)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "结束日期不能早于开始日期");
+        }
+        return new DateRange(start, end);
     }
 
     private static String extractAssetHref(JsonNode assets, String... keys) {
@@ -893,11 +1104,9 @@ public class LiveImageryService {
                     try {
                         double lng = Double.parseDouble(parts[0]);
                         double lat = Double.parseDouble(parts[1]);
-                        // AMap is GCJ-02 -> convert to WGS84 for Cesium/TiTiler alignment
                         Gcj02Wgs84.LngLat wgs = Gcj02Wgs84.gcj02ToWgs84(lng, lat);
                         coords.add(new LngLat(wgs.lng(), wgs.lat()));
                     } catch (NumberFormatException ignored) {
-                        // skip invalid point
                     }
                 }
                 if (coords.size() >= 3) {
@@ -906,7 +1115,6 @@ public class LiveImageryService {
             }
             return polygons;
         } catch (Exception ignored) {
-            // 边界获取失败不阻断主流程，前端可退化为 bbox 显示
             return List.of();
         }
     }
@@ -937,6 +1145,9 @@ public class LiveImageryService {
     }
 
     private record Bbox(String displayName, double minLng, double minLat, double maxLng, double maxLat) {
+    }
+
+    private record DateRange(LocalDate start, LocalDate end) {
     }
 
     public record LiveImageryResult(

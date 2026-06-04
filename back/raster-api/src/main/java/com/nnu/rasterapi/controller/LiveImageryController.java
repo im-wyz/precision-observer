@@ -32,13 +32,19 @@ public class LiveImageryController {
     public LiveImageryResponse byPlace(
             @RequestParam String place,
             @RequestParam(required = false) String start,
-            @RequestParam(required = false) String end
+            @RequestParam(required = false) String end,
+            @RequestParam(required = false) String provider
     ) {
-        LiveImageryService.LiveImageryResult result = liveImageryService.queryByPlaceName(
-                place,
-                parseDateOrNull(start),
-                parseDateOrNull(end)
-        );
+        java.time.LocalDate startDate = parseDateOrNull(start);
+        java.time.LocalDate endDate = parseDateOrNull(end);
+        LiveImageryService.LiveImageryResult result;
+        if ("stac".equalsIgnoreCase(provider)) {
+            result = liveImageryService.queryByPlaceNameForBandAnalysis(place, startDate, endDate);
+        } else if ("local_gee".equalsIgnoreCase(provider) || "local".equalsIgnoreCase(provider)) {
+            result = liveImageryService.queryByPlaceNameForCroplandCompare(place, startDate, endDate);
+        } else {
+            result = liveImageryService.queryByPlaceName(place, startDate, endDate);
+        }
         String token = sessionStore.put(new LiveImagerySessionStore.LiveSession(
                 java.time.Instant.now(),
                 result.minLng(),

@@ -15,6 +15,7 @@ from .redis_progress import publish_progress
 from .rules.engine import evaluate_inspector_rules
 from .tools.analysis_runner import run_remote_sensing_analysis
 from .tools.intent import detect_analysis_intent
+from .tools.spring_tools import run_spring_basic_analysis, run_spring_cropland_analysis, run_spring_spectral_index_analysis
 
 
 def _llm_api_key() -> str:
@@ -26,7 +27,7 @@ def _llm_base_url() -> str:
 
 
 def _llm_model() -> str:
-    return os.getenv("OPENAI_MODEL", os.getenv("QWEN_MODEL", "qwen-plus"))
+    return os.getenv("OPENAI_MODEL", os.getenv("QWEN_MODEL", "qwen3.6-plus"))
 
 
 MAX_ANALYST_ROUNDS = int(os.getenv("MAX_ANALYST_ROUNDS", "5"))
@@ -169,6 +170,8 @@ def _run_gee_analysis_local(state: dict[str, Any], intent: str, task_id: str | N
             "cog_path": result.cog_path,
             "download_url": result.download_url,
             "tile_url": result.tile_url,
+            "geojson": result.meta.get("geojson"),
+            "vector_boundary": result.meta.get("geojson"),
             "report_title": result.report_title,
             "report_summary": result.report_summary,
             "metrics": result.metrics,
@@ -189,6 +192,17 @@ def _run_gee_analysis_local(state: dict[str, Any], intent: str, task_id: str | N
 def director_node(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state["task_id"]
     intent = state.get("analysis_intent") or detect_analysis_intent(str(state.get("user_message") or ""))
+    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+        output = (
+            "1. 统一通过 Agent 任务链路执行；\n"
+            "2. Engineer 优先调用 Spring 内部分析服务，先查本地多波段 COG；\n"
+            "3. 本地缺影像或缺波段时再尝试 GEE 兜底；\n"
+            "4. 输出瓦片、边界、指标、预处理命令和 Markdown 报告。"
+        )
+        publish_progress(task_id, "Director", "Director：已采用本地优先的确定性规划", {"status": "running", "analysis_type": intent})
+        publish_progress(task_id, "Director", "Director 已完成", {"director_output": output, "tool_calls": []})
+        return {"director_output": output, "analysis_intent": intent, "status": "director_done"}
+
     publish_progress(task_id, "Director", "Director：通过 MCP 规划任务", {"status": "running", "analysis_type": intent})
 
     system = (
@@ -218,6 +232,41 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
         feedback += f"\nInspector：{state.get('inspector_output')}"
 
     intent = state.get("analysis_intent") or "general"
+    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+        if intent == "spectral_index":
+            output = (
+                "数据源策略：优先 E:/yaogandata 本地 Sentinel-2 SR 多波段 COG，命名优先 *_s2_sr_multiband_median.tif；"
+                "波段检查：按 b1=B4, b2=B8, b4=B3, b9=B11, b10=B12 映射计算 NDVI/NDWI/NDBI/NBR/SAVI；"
+                "统计：返回 min/max/mean、有效像素比例、研究区面积和默认阈值面积；"
+                "可视化：使用 TiTiler expression 动态切片，并输出边界和报告。"
+            )
+        elif intent == "cropland_change":
+            output = "耕地变化继续复用 Spring 内部耕地分析服务，由 Agent 负责编排进度、报告和兼容返回。"
+        elif intent == "preprocess":
+            output = (
+                "影像预处理采用本地 COG 优先策略：先选 E:/yaogandata 影像并读取 TiTiler 元数据；"
+                "按用户需求生成云掩膜、裁剪、重采样、重投影、COG 转换步骤；"
+                "GDAL 可用且配置允许时执行，否则返回可复现 GDAL 命令和诊断报告。"
+            )
+        else:
+            output = (
+                "基础遥感处理任务采用本地 COG 优先策略：由 Spring 内部服务执行影像合成、阈值分割、"
+                "两期变化检测或本地目录质量检查；输出统一包含瓦片、边界、统计指标和 Markdown 报告。"
+            )
+        publish_progress(
+            task_id,
+            "Analyst",
+            f"Analyst 第 {round_no} 轮完成",
+            {"analyst_output": output, "tool_calls": []},
+        )
+        return {
+            "analyst_output": output,
+            "analyst_round": round_no,
+            "engineer_ok": False,
+            "inspector_pass": False,
+            "status": "analyst_done",
+        }
+
     system = (
         f"你是 Analyst。任务类型是 {intent}。请给出可执行技术方案：数据集、指标、阈值、导出方式、质检点。"
         "可用 gee__、raster__、storage__、gdal__ 前缀工具查询或记录方案。最后输出简洁中文方案。"
@@ -241,6 +290,9 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
 def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state["task_id"]
     intent = state.get("analysis_intent") or detect_analysis_intent(str(state.get("user_message") or ""))
+    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+        return _engineer_node_spring_internal(state, intent)
+
     publish_progress(
         task_id,
         "Engineer",
@@ -297,9 +349,12 @@ def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
         "cog_path": data.get("cog_path", ""),
         "download_url": data.get("download_url", ""),
         "tile_url": data.get("tile_url", ""),
+        "geojson": data.get("geojson") or (data.get("meta") or {}).get("geojson"),
+        "vector_boundary": data.get("vector_boundary") or data.get("geojson") or (data.get("meta") or {}).get("geojson"),
         "report_title": data.get("report_title", ""),
         "report_summary": data.get("report_summary", ""),
         "metrics": data.get("metrics", {}),
+        "meta": data.get("meta", {}),
         "analysis_intent": data.get("analysis_type", intent),
     }
 
@@ -332,8 +387,131 @@ def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
     return extra
 
 
+def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[str, Any]:
+    task_id = state["task_id"]
+    is_index = intent == "spectral_index"
+    is_cropland = intent == "cropland_change"
+    tool_name = "spring_internal_index" if is_index else ("spring_agent_chat_cropland" if is_cropland else f"spring_internal_{intent}")
+    publish_progress(
+        task_id,
+        "Engineer",
+        "Engineer：正在选择本地多波段 COG 并检查指数波段" if is_index else (
+            "Engineer：正在调用内部耕地变化分析服务" if is_cropland else (
+                "Engineer：正在生成影像基础预处理链路" if intent == "preprocess" else "Engineer：正在调用基础遥感处理服务"
+            )
+        ),
+        {"analysis_type": intent},
+    )
+    try:
+        if is_index:
+            data = run_spring_spectral_index_analysis(state)
+        elif is_cropland:
+            data = run_spring_cropland_analysis(state)
+        else:
+            data = run_spring_basic_analysis(state, intent)
+    except Exception as exc:
+        if not is_index:
+            data = {"ok": False, "message": str(exc), "analysis_type": intent}
+        else:
+            publish_progress(
+                task_id,
+                "Engineer",
+                "本地 COG 未命中或缺少波段，正在尝试 GEE 兜底",
+                {"analysis_type": intent, "local_error": str(exc)},
+            )
+            result = run_remote_sensing_analysis(
+                str(state.get("user_message") or ""),
+                state.get("region_coords") or [],
+                str(state.get("start_date") or "2024-01-01"),
+                str(state.get("end_date") or "2024-01-31"),
+                analysis_type=intent,
+            )
+            data = {
+                "ok": bool(result.ok),
+                "analysis_type": result.analysis_type,
+                "source_kind": "gee",
+                "download_url": result.download_url,
+                "tile_url": result.tile_url,
+                "cog_path": result.cog_path,
+                "metrics": result.metrics,
+                "report_title": result.report_title,
+                "report_summary": result.report_summary,
+                "message": result.message,
+                "meta": {**result.meta, "local_error": str(exc), "source_kind": "gee"},
+            }
+            tool_name = "spring_internal_index_then_gee"
+
+    engineer_ok = bool(data.get("ok"))
+    message = str(data.get("message") or data.get("error") or "").strip()
+    output = data.get("report_summary") or message or "Engineer 执行结束"
+    meta = data.get("meta") or {}
+    extra: dict[str, Any] = {
+        "engineer_output": output,
+        "engineer_ok": engineer_ok,
+        "status": "engineer_done" if engineer_ok else "engineer_failed",
+        "message": message,
+        "cog_path": data.get("cog_path", ""),
+        "download_url": data.get("download_url", ""),
+        "tile_url": data.get("tile_url", "") or data.get("tileTemplateUrl", ""),
+        "tileTemplateUrl": data.get("tileTemplateUrl", "") or data.get("tile_url", ""),
+        "geojson": data.get("geojson") or meta.get("geojson"),
+        "vector_boundary": data.get("vector_boundary") or data.get("geojson") or meta.get("geojson"),
+        "boundaries": data.get("boundaries") or meta.get("boundaries"),
+        "report_title": data.get("report_title", ""),
+        "report_summary": data.get("report_summary", ""),
+        "metrics": data.get("metrics", {}),
+        "chartOption": data.get("chartOption") or meta.get("chartOption"),
+        "cropland_data": data.get("cropland_data") or meta.get("cropland_data"),
+        "change_layers": data.get("change_layers") or meta.get("change_layers"),
+        "preprocess_steps": data.get("preprocess_steps") or meta.get("preprocess_steps"),
+        "gdal_commands": data.get("gdal_commands") or meta.get("gdal_commands"),
+        "warnings": data.get("warnings") or meta.get("warnings"),
+        "meta": meta,
+        "analysis_intent": data.get("analysis_type", intent),
+        "index_key": data.get("index_key") or state.get("index_key"),
+        "source_kind": data.get("source_kind") or meta.get("source_kind"),
+        "source_scene_id": data.get("source_scene_id") or meta.get("source_scene_id"),
+        "band_map": data.get("band_map") or meta.get("band_map"),
+    }
+    publish_payload = {
+        **extra,
+        "tileUrl": extra.get("tile_url", ""),
+        "tool_calls": [{"tool": tool_name, "result": json.dumps(data, ensure_ascii=False)[:12000], "via": "spring"}],
+        "status": "running",
+    }
+    publish_progress(task_id, "Engineer", message or ("指数分析完成" if engineer_ok else "指数分析失败"), publish_payload)
+    return extra
+
+
 def inspector_node(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state["task_id"]
+    intent = str(state.get("analysis_intent") or "")
+    local_intents = {
+        "spectral_index",
+        "cropland_change",
+        "composite",
+        "threshold",
+        "change_detection",
+        "catalog_check",
+        "preprocess",
+    }
+    if intent in local_intents:
+        inspector_pass = bool(state.get("engineer_ok") and state.get("report_summary"))
+        reason = "本地基础遥感任务已返回报告与可展示结果。" if inspector_pass else "本地基础遥感任务缺少报告或 Engineer 未成功。"
+        final_answer = str(state.get("report_summary") or "") if inspector_pass else ""
+        publish_progress(
+            task_id,
+            "Inspector",
+            "Inspector 验收完成",
+            {"inspector_pass": inspector_pass, "inspector_output": reason, "tool_calls": []},
+        )
+        return {
+            "inspector_output": reason,
+            "inspector_pass": inspector_pass,
+            "final_answer": final_answer,
+            "status": "completed" if inspector_pass else "inspector_rejected",
+        }
+
     publish_progress(task_id, "Inspector", "Inspector：规则 + MCP + LLM 验收")
 
     rule_result = evaluate_inspector_rules(state)

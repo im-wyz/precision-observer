@@ -70,10 +70,10 @@ public class CroplandAnalysisService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "起止月份不能为空");
         }
 
-        LiveImageryService.LiveImageryResult startImagery = liveImageryService.queryByPlaceName(
+        LiveImageryService.LiveImageryResult startImagery = liveImageryService.queryByPlaceNameForBandAnalysis(
                 place, startMonth.atDay(1), startMonth.atEndOfMonth()
         );
-        LiveImageryService.LiveImageryResult endImagery = liveImageryService.queryByPlaceName(
+        LiveImageryService.LiveImageryResult endImagery = liveImageryService.queryByPlaceNameForBandAnalysis(
                 place, endMonth.atDay(1), endMonth.atEndOfMonth()
         );
 
@@ -208,12 +208,16 @@ public class CroplandAnalysisService {
 
     private BufferedImage fetchBandTile(int z, int x, int y, String cogUrl) {
         try {
+            BandSource source = parseBandSource(cogUrl);
             String rescale = tileRescaleParam.isEmpty() ? "0,10000" : tileRescaleParam;
             String url = titilerBaseUrl.replaceAll("/$", "")
                     + "/cog/tiles/WebMercatorQuad/" + z + "/" + x + "/" + y + ".png"
-                    + "?url=" + URLEncoder.encode(cogUrl, StandardCharsets.UTF_8)
+                    + "?url=" + URLEncoder.encode(source.url(), StandardCharsets.UTF_8)
                     + "&tilesize=" + tileSize
                     + "&rescale=" + URLEncoder.encode(rescale, StandardCharsets.UTF_8);
+            if (source.bidx() != null) {
+                url += "&bidx=" + source.bidx();
+            }
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(timeout)
@@ -225,6 +229,23 @@ public class CroplandAnalysisService {
             return ImageIO.read(new ByteArrayInputStream(resp.body()));
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    private static BandSource parseBandSource(String raw) {
+        if (raw == null) {
+            return new BandSource("", null);
+        }
+        int marker = raw.lastIndexOf("|bidx=");
+        if (marker < 0) {
+            return new BandSource(raw, null);
+        }
+        String url = raw.substring(0, marker);
+        String bidxRaw = raw.substring(marker + "|bidx=".length()).trim();
+        try {
+            return new BandSource(url, Integer.parseInt(bidxRaw));
+        } catch (NumberFormatException ignored) {
+            return new BandSource(url, null);
         }
     }
 
@@ -313,5 +334,7 @@ public class CroplandAnalysisService {
             double deltaPercent
     ) {
     }
-}
 
+    private record BandSource(String url, Integer bidx) {
+    }
+}

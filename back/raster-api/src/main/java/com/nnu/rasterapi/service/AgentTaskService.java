@@ -35,7 +35,9 @@ public class AgentTaskService {
                 message.trim(),
                 readRegionCoords(context),
                 readDate(context, "startDate", "start_date", LocalDate.now().minusMonths(1)),
-                readDate(context, "endDate", "end_date", LocalDate.now())
+                readDate(context, "endDate", "end_date", LocalDate.now()),
+                readOptionalDate(context, "compareStartDate", "compare_start_date"),
+                readOptionalDate(context, "compareEndDate", "compare_end_date")
         );
         TaskResponse created = taskService.createTask(request);
         Map<String, Object> snapshot = taskService.getTaskSnapshot(created.id());
@@ -61,6 +63,14 @@ public class AgentTaskService {
             return s.trim();
         }
         return fallback.toString();
+    }
+
+    private static String readOptionalDate(Map<String, Object> context, String camelKey, String snakeKey) {
+        Object raw = readAny(context, camelKey, snakeKey);
+        if (raw instanceof String s && !s.isBlank()) {
+            return s.trim();
+        }
+        return "";
     }
 
     private static Object readAny(Map<String, Object> context, String camelKey, String snakeKey) {

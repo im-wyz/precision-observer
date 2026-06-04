@@ -61,17 +61,15 @@ const models = [
 ];
 
 export default function ModelLibrary() {
-  const [selectedModel, setSelectedModel] = useState(models[3]); // HydraExtract_Pro as default
+  const [selectedModel, setSelectedModel] = useState(models[3]);
   const [isConfigOpen, setIsConfigOpen] = useState(true);
 
   const categories = Array.from(new Set(models.map(m => m.category)));
 
   return (
     <div className="h-full flex bg-[#f8f9fa] overflow-hidden relative">
-      {/* Scrollable Model Grid */}
       <section className="flex-1 overflow-y-auto p-8 custom-scrollbar">
         <div className="max-w-6xl mx-auto space-y-10 pb-20">
-          {/* Page Header */}
           <header className="flex justify-between items-end pb-4 border-b border-slate-200">
             <div>
               <h1 className="font-headline text-3xl font-bold tracking-tight text-slate-800">Model Library</h1>
@@ -153,7 +151,6 @@ export default function ModelLibrary() {
         </div>
       </section>
 
-      {/* Right Configuration Side Panel */}
       <AnimatePresence>
         {isConfigOpen && (
           <motion.aside 
@@ -253,4 +250,3 @@ export default function ModelLibrary() {
     </div>
   );
 }
-

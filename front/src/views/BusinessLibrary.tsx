@@ -17,7 +17,6 @@ const pipelineTasks = [
 export default function BusinessLibrary() {
   return (
     <div className="h-full flex flex-col bg-[#f8f9fa] p-8 overflow-y-auto custom-scrollbar">
-      {/* Header Section */}
       <header className="flex flex-col gap-1 mb-10">
         <div className="flex items-center gap-2">
           <span className="h-[1px] w-6 bg-indigo-500"></span>
@@ -27,7 +26,6 @@ export default function BusinessLibrary() {
         <p className="text-slate-500 max-w-2xl font-sans text-xs leading-relaxed opacity-80">Scene-based workflow management and executive-level geospatial intelligence insights.</p>
       </header>
 
-      {/* Templates */}
       <section className="mb-12">
         <div className="flex items-end justify-between mb-4 border-b border-slate-200 pb-2">
           <h3 className="font-headline text-lg font-bold text-slate-700">Business Scenario Templates</h3>
@@ -55,7 +53,6 @@ export default function BusinessLibrary() {
         </div>
       </section>
 
-      {/* Active Pipeline Table-like View */}
       <section className="mb-12">
         <h3 className="font-headline text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
           <PlayCircle className="w-4 h-4 text-emerald-500" />
@@ -98,7 +95,6 @@ export default function BusinessLibrary() {
         </div>
       </section>
 
-      {/* Reports and Charts */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-10">
         <div className="lg:col-span-2 bg-white rounded-xl p-8 border border-slate-200 flex flex-col items-center justify-center relative min-h-[350px] shadow-sm">
           <div className="absolute top-6 left-6 w-full pr-12 flex justify-between items-start">
@@ -163,7 +159,6 @@ export default function BusinessLibrary() {
         </div>
       </section>
 
-      {/* Decorative Background Map Detail */}
       <div className="fixed bottom-0 right-0 w-1/3 h-1/2 -z-10 opacity-10 pointer-events-none mix-blend-screen overflow-hidden">
         <div 
           className="w-full h-full bg-cover bg-center grayscale contrast-150 brightness-50"

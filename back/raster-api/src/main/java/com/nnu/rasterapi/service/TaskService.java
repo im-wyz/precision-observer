@@ -126,6 +126,12 @@ public class TaskService {
         doc.put("region_coords", request.regionCoords() != null ? request.regionCoords() : Collections.emptyList());
         doc.put("start_date", request.startDate());
         doc.put("end_date", request.endDate());
+        if (request.compareStartDate() != null && !request.compareStartDate().isBlank()) {
+            doc.put("compare_start_date", request.compareStartDate());
+        }
+        if (request.compareEndDate() != null && !request.compareEndDate().isBlank()) {
+            doc.put("compare_end_date", request.compareEndDate());
+        }
         doc.put("current_node", "api");
         doc.put("last_message", "任务已创建，正在连接智能体…");
         doc.put(
@@ -168,6 +174,12 @@ public class TaskService {
         body.put("region_coords", request.regionCoords() != null ? request.regionCoords() : Collections.emptyList());
         body.put("start_date", request.startDate());
         body.put("end_date", request.endDate());
+        if (request.compareStartDate() != null && !request.compareStartDate().isBlank()) {
+            body.put("compare_start_date", request.compareStartDate());
+        }
+        if (request.compareEndDate() != null && !request.compareEndDate().isBlank()) {
+            body.put("compare_end_date", request.compareEndDate());
+        }
 
         agentWebClient.post()
                 .uri("/analyze")

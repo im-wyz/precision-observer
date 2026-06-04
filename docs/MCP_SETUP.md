@@ -3,7 +3,7 @@
 ## 架构
 
 ```text
-浏览器 → Spring(8080) → agent-api(8001) LangGraph + qwen-plus function calling
+浏览器 → Spring(8080) → agent-api(8001) LangGraph + qwen3.6-plus function calling
                               ↓ MCP SSE
          mcp-gee(8101) mcp-gdal(8102) mcp-raster(8103) mcp-storage(8104) mcp-inference(8105)
                               ↓

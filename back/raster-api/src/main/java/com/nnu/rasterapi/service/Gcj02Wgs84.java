@@ -1,16 +1,12 @@
 package com.nnu.rasterapi.service;
 
 /**
- * Coordinate transform utilities.
- *
- * AMap returns GCJ-02 coordinates. Most STAC/COG/Cesium/TiTiler workflows are WGS84/WebMercator based.
- * We convert GCJ-02 -> WGS84 to align boundary clipping with imagery tiles.
+ * 高德返回 GCJ-02；Cesium/TiTiler 使用 WGS84/WebMercator，需要先转换坐标。
  */
 public final class Gcj02Wgs84 {
     private Gcj02Wgs84() {
     }
 
-    // Krasovsky 1940
     private static final double A = 6378245.0;
     private static final double EE = 0.00669342162296594323;
     private static final double PI = Math.PI;
@@ -57,4 +53,3 @@ public final class Gcj02Wgs84 {
     public record LngLat(double lng, double lat) {
     }
 }
-

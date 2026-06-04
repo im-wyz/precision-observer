@@ -32,6 +32,56 @@ export type LoadRasterFn = (
 
 let geoSourceRef: GeoJsonDataSource | null = null;
 
+function boundariesFromGeoJson(geojson: Record<string, unknown> | null): Array<Array<{ lng: number; lat: number }>> {
+  if (!geojson) return [];
+  const geometry =
+    geojson.type === 'Feature' && geojson.geometry && typeof geojson.geometry === 'object'
+      ? (geojson.geometry as Record<string, unknown>)
+      : geojson;
+  const type = geometry.type;
+  const coordinates = geometry.coordinates;
+  const rings: Array<Array<{ lng: number; lat: number }>> = [];
+
+  const pushRing = (rawRing: unknown) => {
+    if (!Array.isArray(rawRing)) return;
+    const ring: Array<{ lng: number; lat: number }> = [];
+    for (const pt of rawRing) {
+      if (!Array.isArray(pt) || pt.length < 2) continue;
+      const lng = Number(pt[0]);
+      const lat = Number(pt[1]);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) ring.push({ lng, lat });
+    }
+    if (ring.length >= 3) rings.push(ring);
+  };
+
+  if (type === 'Polygon' && Array.isArray(coordinates)) {
+    pushRing(coordinates[0]);
+  } else if (type === 'MultiPolygon' && Array.isArray(coordinates)) {
+    for (const polygon of coordinates) {
+      if (Array.isArray(polygon)) pushRing(polygon[0]);
+    }
+  }
+  return rings;
+}
+
+function boundariesFromSnapshot(value: unknown): Array<Array<{ lng: number; lat: number }>> {
+  if (!Array.isArray(value)) return [];
+  const rings: Array<Array<{ lng: number; lat: number }>> = [];
+  for (const rawRing of value) {
+    if (!Array.isArray(rawRing)) continue;
+    const ring: Array<{ lng: number; lat: number }> = [];
+    for (const pt of rawRing) {
+      if (!pt || typeof pt !== 'object') continue;
+      const o = pt as Record<string, unknown>;
+      const lng = Number(o.lng);
+      const lat = Number(o.lat);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) ring.push({ lng, lat });
+    }
+    if (ring.length >= 3) rings.push(ring);
+  }
+  return rings;
+}
+
 export async function applyTaskSnapshotToViewer(
   viewer: Viewer | null,
   snap: TaskRedisSnapshot,
@@ -47,10 +97,12 @@ export async function applyTaskSnapshotToViewer(
   if (!payload.extent) return;
 
   if (payload.tileUrl) {
+    const snapshotBoundaries = boundariesFromSnapshot(snap.boundaries);
+    const boundaries = snapshotBoundaries.length ? snapshotBoundaries : boundariesFromGeoJson(payload.geojson);
     await loadRaster(
       payload.extent,
       payload.tileUrl,
-      [],
+      boundaries,
       viewer,
       imageryLayerRef,
       boundaryEntitiesRef,
@@ -80,17 +132,24 @@ export async function applyTaskSnapshotToViewer(
         flyToExtentNadir(viewer, payload.extent);
       }
     } catch {
-      // ignore geojson load errors
+      // GeoJSON 只是辅助边界，加载失败不影响栅格影像显示。
     }
   }
 }
 
 export function buildFinalAnswerFromSnapshot(snap: TaskRedisSnapshot): string {
+  const warnings = Array.isArray(snap.warnings)
+    ? snap.warnings.filter((w): w is string => typeof w === 'string' && w.trim().length > 0)
+    : [];
+  const appendWarnings = (text: string): string => {
+    if (!warnings.length) return text;
+    return `${text.trim()}\n\n## 质检提示\n\n${warnings.map((w) => `- ${w}`).join('\n')}`;
+  };
   if (typeof snap.report_summary === 'string' && snap.report_summary.trim()) {
-    return snap.report_summary.trim();
+    return appendWarnings(snap.report_summary);
   }
   if (typeof snap.answer === 'string' && snap.answer.trim()) {
-    return snap.answer.trim();
+    return appendWarnings(snap.answer);
   }
   const st = snap.status ?? 'completed';
   const engineerMsg =

@@ -38,7 +38,7 @@ public class LlmIntentTool {
     public LlmIntentTool(
             @Value("${llm.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
             @Value("${llm.api-key:}") String apiKey,
-            @Value("${llm.model:tongyi-intent-detect-v3}") String model,
+            @Value("${llm.model:qwen3.6-plus}") String model,
             @Value("${llm.timeout-ms:15000}") long timeoutMs
     ) {
         this.baseUrl = baseUrl;
@@ -177,4 +177,3 @@ public class LlmIntentTool {
 
     public record ParsedIntent(String intent, String place, YearMonth startMonth, YearMonth endMonth) {}
 }
-

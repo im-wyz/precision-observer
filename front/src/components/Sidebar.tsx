@@ -4,7 +4,6 @@ import { ViewType } from '../App';
 interface SidebarProps {
   activeView: ViewType;
   onViewChange: (view: ViewType) => void;
-  /** 新建空白工作区：切到 Workspace 并重置对话与地图 */
   onStartNewWorkspace?: () => void;
 }
 
@@ -76,4 +75,3 @@ export default function Sidebar({ activeView, onViewChange, onStartNewWorkspace 
     </aside>
   );
 }
-

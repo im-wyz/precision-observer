@@ -155,18 +155,11 @@ type AIWorkspaceProps = {
   newWorkspaceNonce?: number;
 };
 
-/** 与 Roboflow instruction 类似的地物提取指令（不抢耕地变化等其它意图） */
-/** 耕地/绿度等仍走 Spring /api/agent/chat */
-function looksCroplandLegacyCommand(text: string): boolean {
-  return /耕地|cropland|绿度|绿化|植被变化/.test(text) && !/蓝藻|藻华|水华|水体|NDCI/i.test(text);
-}
-
 /** 自然语言遥感分析 → LangGraph 多智能体（/api/tasks + STOMP） */
 function shouldRunMultiAgentAnalysis(text: string): boolean {
   if (looksRoboflowFeatureInstruction(text)) return false;
-  if (looksCroplandLegacyCommand(text)) return false;
   if (useAgentV2()) return true;
-  return /分析|监测|蓝藻|藻|太湖|巢湖|鄱阳|遥感|NDCI|面积|水体|水质|变化|夏季|冬季|春季|秋季/i.test(text);
+  return /分析|监测|蓝藻|藻|太湖|巢湖|鄱阳|遥感|NDCI|NDVI|NDWI|NDBI|NBR|SAVI|指数|耕地|农田|面积|水体|水质|变化|变化检测|真彩色|假彩色|农业假彩色|合成|阈值|分割|提取|影像目录|质量检查|覆盖率|预处理|云掩膜|去云|裁剪|行政区|自定义框|重采样|分辨率|重投影|云优化|COG|gdalwarp|gdal_translate|夏季|冬季|春季|秋季/i.test(text);
 }
 
 function looksRoboflowFeatureInstruction(text: string): boolean {
@@ -644,6 +637,33 @@ type LiveImageryResponse = {
   coverageRatio: number;
   boundaries: Array<Array<{ lng: number; lat: number }>>;
 };
+type ChangeLayerPayload = {
+  tile_url?: string;
+  tileTemplateUrl?: string;
+  extent?: Extent | Record<string, unknown>;
+  boundaries?: Array<Array<{ lng: number; lat: number }>>;
+  tile_max_zoom?: number;
+  tile_min_zoom?: number;
+};
+type ChangeLayersPayload = {
+  mode?: string;
+  left?: ChangeLayerPayload;
+  right?: ChangeLayerPayload;
+};
+type NormalizedChangeLayer = {
+  extent: Extent;
+  tileTemplateUrl: string;
+  boundaries: Array<Array<{ lng: number; lat: number }>>;
+  tileMaxZoom?: number;
+  tileMinZoom?: number;
+};
+type CroplandCompareParams = {
+  place: string;
+  startYear: number;
+  startMonth: number;
+  endYear: number;
+  endMonth: number;
+};
 type AgentChatResponse = {
   answer: string;
   intent: string;
@@ -672,38 +692,57 @@ type RasterUploadResponse = {
   tileMinZoom?: number | null;
 };
 
+function parseCroplandCompareParamsFromText(text: string): CroplandCompareParams | null {
+  const normalized = text.trim();
+  if (!/耕地|农田|cropland|farmland/i.test(normalized) || !/变化|change/i.test(normalized)) return null;
+
+  const dateMatch = normalized.match(/(\d{4})\s*年\s*(\d{1,2})\s*月.*?(\d{4})\s*年\s*(\d{1,2})\s*月/);
+  if (!dateMatch) return null;
+
+  const startYear = Number(dateMatch[1]);
+  const startMonth = Number(dateMatch[2]);
+  const endYear = Number(dateMatch[3]);
+  const endMonth = Number(dateMatch[4]);
+  if (![startYear, startMonth, endYear, endMonth].every(Number.isFinite)) return null;
+  if (startMonth < 1 || startMonth > 12 || endMonth < 1 || endMonth > 12) return null;
+
+  const afterDates = normalized.slice((dateMatch.index ?? 0) + dateMatch[0].length);
+  const beforeDates = normalized.slice(0, dateMatch.index ?? 0);
+  const cleanPlace = (raw: string) =>
+    raw
+      .replace(/分析|对比|监测|统计|一下|请|帮我|的|耕地.*$/g, '')
+      .replace(/[，。,.；;：:\s]/g, '')
+      .trim();
+  const place = cleanPlace(afterDates) || cleanPlace(beforeDates);
+  if (!place) return null;
+
+  return { place, startYear, startMonth, endYear, endMonth };
+}
+
 function ChartBubble({ option }: { option?: Record<string, unknown> }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<echarts.EChartsType | null>(null);
 
   useEffect(() => {
-    if (!chartRef.current) return;
-    const instance = echarts.init(chartRef.current);
-    chartInstanceRef.current = instance;
-
-    const onResize = () => {
-      chartInstanceRef.current?.resize();
-    };
-    window.addEventListener('resize', onResize);
-
     return () => {
-      window.removeEventListener('resize', onResize);
       chartInstanceRef.current?.dispose();
       chartInstanceRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    const instance = chartInstanceRef.current;
-    if (!instance) return;
+    if (!option || !chartRef.current) return;
 
-    if (!option) {
-      instance.clear();
-      return;
-    }
-
+    const instance = chartInstanceRef.current ?? echarts.init(chartRef.current);
+    chartInstanceRef.current = instance;
     instance.setOption(option, true);
-    instance.resize();
+    window.requestAnimationFrame(() => instance.resize());
+
+    const onResize = () => instance.resize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+    };
   }, [option]);
 
   if (!option) return null;
@@ -744,6 +783,8 @@ export default function AIWorkspace({
   const roboflowWorkflowInProgressRef = useRef(false);
   /** 多智能体任务：仅在首次收到区域时正俯视飞到研究区，结束不再改相机 */
   const multiAgentCameraFlewRef = useRef(false);
+  /** 耕地变化：当 agent 暂未带 change_layers 时，仅用用户原文兜底加载一次本地分屏影像 */
+  const multiAgentCroplandFallbackLoadedRef = useRef(false);
   const croplandRestoreRef = useRef<WorkspacePersistedStateV1['croplandRestore']>(null);
   const uploadDisplayNameRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -767,6 +808,31 @@ export default function AIWorkspace({
   useEffect(() => {
     analysisModeRef.current = analysisMode;
   }, [analysisMode]);
+
+  useLayoutEffect(() => {
+    removeLegacyViewfinderOverlay();
+  });
+
+  useEffect(() => {
+    removeLegacyViewfinderOverlay();
+    const observer = new MutationObserver(() => {
+      removeLegacyViewfinderOverlay();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    const cleanupTimers = [
+      window.setTimeout(removeLegacyViewfinderOverlay, 0),
+      window.setTimeout(removeLegacyViewfinderOverlay, 250),
+      window.setTimeout(removeLegacyViewfinderOverlay, 1000),
+      window.setTimeout(removeLegacyViewfinderOverlay, 2500),
+    ];
+
+    return () => {
+      observer.disconnect();
+      for (const timer of cleanupTimers) window.clearTimeout(timer);
+    };
+  }, []);
+
   const [chatInput, setChatInput] = useState('');
   const [roboflowWorkflowBusy, setRoboflowWorkflowBusy] = useState(false);
   const [multiAgentBusy, setMultiAgentBusy] = useState(false);
@@ -791,15 +857,58 @@ export default function AIWorkspace({
     (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_TITILER_URL ||
     '';
 
+  function removeLegacyViewfinderOverlay() {
+    const searchRoots = [cesiumWrapRef.current?.parentElement, document.body].filter(
+      (root): root is HTMLElement => root != null,
+    );
+
+    for (const root of searchRoots) {
+      for (const el of root.querySelectorAll('div')) {
+        const classes = el.classList;
+        const isLegacyViewfinder =
+          classes.contains('absolute') &&
+          classes.contains('top-1/2') &&
+          classes.contains('left-1/2') &&
+          classes.contains('-translate-x-1/2') &&
+          classes.contains('-translate-y-1/2') &&
+          classes.contains('w-48') &&
+          classes.contains('h-48') &&
+          classes.contains('pointer-events-none');
+        if (!isLegacyViewfinder) continue;
+
+        let hasCornerMarks = false;
+        for (const child of el.children) {
+          const childClasses = child.classList;
+          if (
+            (childClasses.contains('border-t-2') && childClasses.contains('border-l-2')) ||
+            (childClasses.contains('border-b-2') && childClasses.contains('border-r-2'))
+          ) {
+            hasCornerMarks = true;
+            break;
+          }
+        }
+        if (hasCornerMarks) el.remove();
+      }
+    }
+  }
+
   /** 将后端返回的瓦片模板换成浏览器可请求的地址（开发时代理绕过 TiTiler 跨域） */
   function rewriteTileTemplateUrlForBrowser(template: string): string {
     const envObj = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
     const dev = Boolean(envObj?.DEV);
     const useProxy = envObj?.VITE_TITILER_USE_PROXY !== 'false';
     const proxyPrefix = (envObj?.VITE_TITILER_PROXY_PREFIX || '/titiler-proxy').replace(/\/$/, '') || '/titiler-proxy';
+    const springBase = rasterApiBase.replace(/\/$/, '');
+
+    if (template.startsWith('/api/live-imagery/tiles/')) {
+      return `${springBase}${template}`;
+    }
 
     try {
       const parsed = new URL(template);
+      if (parsed.pathname.includes('/api/live-imagery/tiles/')) {
+        return template;
+      }
       // 开发默认：同源 /titiler-proxy → vite 转发到 TiTiler（见 vite.config.ts）
       if (dev && useProxy && typeof window !== 'undefined' && parsed.pathname.includes('/cog/')) {
         return `${window.location.origin}${proxyPrefix}${parsed.pathname}${parsed.search}`;
@@ -843,6 +952,7 @@ export default function AIWorkspace({
       const range = buildDateRange(monthSelection);
       params.set('start', range.start);
       params.set('end', range.end);
+      params.set('provider', 'local_gee');
     }
     const liveUrl = `${rasterApiBase.replace(/\/$/, '')}/api/live-imagery/by-place?${params.toString()}`;
     const liveRes = await fetch(liveUrl);
@@ -913,13 +1023,15 @@ export default function AIWorkspace({
       tileMinZoom?: number;
       /** 瓦片请求失败时在对话里提示（便于排查超大非 COG、VITE_TITILER_URL 等） */
       reportTileErrorsToChat?: boolean;
+      skipAbortPrevious?: boolean;
     },
   ) {
     if (!viewer) return;
 
-    requestAbortRef.current?.abort();
-    const abortController = new AbortController();
-    requestAbortRef.current = abortController;
+    if (!options?.skipAbortPrevious) {
+      requestAbortRef.current?.abort();
+      requestAbortRef.current = new AbortController();
+    }
 
     if (!tileTemplateUrl || typeof tileTemplateUrl !== 'string') {
       throw new Error('瓦片模板 URL 无效');
@@ -1035,6 +1147,7 @@ export default function AIWorkspace({
       });
     }
     viewer.scene.requestRender();
+
   }
 
   function clearBoundaryMask(viewer: Viewer, boundaryMaskEntitiesRef: { current: Entity[] }) {
@@ -1107,11 +1220,28 @@ export default function AIWorkspace({
   function removeImageryLayerFromViewer(viewer: Viewer, imageryLayerRef: { current: ImageryLayer | null }) {
     if (!imageryLayerRef.current) return;
     try {
-      viewer.imageryLayers.remove(imageryLayerRef.current, true);
+      const removed = viewer.imageryLayers.remove(imageryLayerRef.current, true);
+      if (!removed) return;
     } catch {
-      // ignore
+      return;
     }
     imageryLayerRef.current = null;
+  }
+
+  function removeImageryLayerFromAnyViewer(imageryLayerRef: { current: ImageryLayer | null }) {
+    const layer = imageryLayerRef.current;
+    if (!layer) return;
+    for (const viewer of [viewerLeftRef.current, viewerRightRef.current]) {
+      if (!viewer || viewer.isDestroyed()) continue;
+      try {
+        if (viewer.imageryLayers.remove(layer, true)) {
+          imageryLayerRef.current = null;
+          return;
+        }
+      } catch {
+        // 继续尝试其它 Viewer
+      }
+    }
   }
 
   function removeRoboflowOverlayFromViewer(viewer: Viewer | null) {
@@ -1318,10 +1448,16 @@ export default function AIWorkspace({
     options?: { skipCroplandRefUpdate?: boolean },
   ) {
     const leftViewer = viewerLeftRef.current;
+    const rightViewer = viewerRightRef.current;
     if (!leftViewer || !normalizedPlace) return;
+    removeLegacyViewfinderOverlay();
 
     for (const l of baseLayersLeftRef.current) l.show = false;
     for (const l of baseLayersRightRef.current) l.show = false;
+    if (rightViewer) {
+      removeImageryLayerFromAnyViewer(imageryLayerRightRef);
+      clearBoundaryMask(rightViewer, boundaryMaskRightEntitiesRef);
+    }
 
     const [leftLive, rightLive] = await Promise.all([
       queryLiveImagery(normalizedPlace, { year: sy, month: sm }),
@@ -1335,7 +1471,12 @@ export default function AIWorkspace({
       leftViewer,
       imageryLayerLeftRef,
       boundaryMaskLeftEntitiesRef,
-      { splitDirection: SplitDirection.LEFT, applyMask: true, shouldFlyTo: true },
+      {
+        splitDirection: SplitDirection.LEFT,
+        applyMask: false,
+        shouldFlyTo: true,
+        skipAbortPrevious: true,
+      },
     );
 
     await loadRasterByCog(
@@ -1345,9 +1486,16 @@ export default function AIWorkspace({
       leftViewer,
       imageryLayerRightRef,
       boundaryMaskRightEntitiesRef,
-      { splitDirection: SplitDirection.RIGHT, applyMask: false, shouldFlyTo: false },
+      {
+        splitDirection: SplitDirection.RIGHT,
+        applyMask: false,
+        shouldFlyTo: false,
+        skipAbortPrevious: true,
+      },
     );
     leftViewer.scene.splitPosition = Math.max(0.05, Math.min(0.95, splitPositionPct / 100));
+    rightViewer?.scene && (rightViewer.scene.splitPosition = 1.0);
+    setSplitPercent(Math.max(5, Math.min(95, splitPositionPct)));
 
     if (!options?.skipCroplandRefUpdate) {
       croplandRestoreRef.current = {
@@ -1358,6 +1506,108 @@ export default function AIWorkspace({
         endMonth: em,
       };
     }
+  }
+
+  function normalizeChangeLayerPayload(layer: unknown): NormalizedChangeLayer | null {
+    if (!layer || typeof layer !== 'object') return null;
+    const raw = layer as ChangeLayerPayload;
+    const tileTemplateUrl = raw.tile_url || raw.tileTemplateUrl || '';
+    const extentRaw = raw.extent;
+    if (!tileTemplateUrl || !extentRaw || typeof extentRaw !== 'object') return null;
+    const extentObj = extentRaw as Record<string, unknown>;
+    const extent = {
+      minLng: Number(extentObj.minLng ?? extentObj.min_lng),
+      minLat: Number(extentObj.minLat ?? extentObj.min_lat),
+      maxLng: Number(extentObj.maxLng ?? extentObj.max_lng),
+      maxLat: Number(extentObj.maxLat ?? extentObj.max_lat),
+    };
+    if (![extent.minLng, extent.minLat, extent.maxLng, extent.maxLat].every(Number.isFinite)) return null;
+    return {
+      extent,
+      tileTemplateUrl,
+      boundaries: Array.isArray(raw.boundaries) ? raw.boundaries : [],
+      tileMaxZoom: typeof raw.tile_max_zoom === 'number' ? raw.tile_max_zoom : undefined,
+      tileMinZoom: typeof raw.tile_min_zoom === 'number' ? raw.tile_min_zoom : undefined,
+    };
+  }
+
+  async function loadChangeLayersFromSnapshot(snap: TaskRedisSnapshot): Promise<boolean> {
+    const leftViewer = viewerLeftRef.current;
+    const rightViewer = viewerRightRef.current;
+    if (!leftViewer) return false;
+    removeLegacyViewfinderOverlay();
+
+    const rawChangeLayers = snap.change_layers;
+    if (rawChangeLayers && typeof rawChangeLayers === 'object') {
+      const changeLayers = rawChangeLayers as ChangeLayersPayload;
+      const left = normalizeChangeLayerPayload(changeLayers.left);
+      const right = normalizeChangeLayerPayload(changeLayers.right);
+      if (left && right) {
+        setAnalysisMode(true);
+        setCustomImageryMode(false);
+        setSplitPercent(50);
+        for (const l of baseLayersLeftRef.current) l.show = false;
+        for (const l of baseLayersRightRef.current) l.show = false;
+        if (rightViewer) {
+          removeImageryLayerFromAnyViewer(imageryLayerRightRef);
+          clearBoundaryMask(rightViewer, boundaryMaskRightEntitiesRef);
+        }
+
+        await loadRasterByCog(
+          left.extent,
+          left.tileTemplateUrl,
+          left.boundaries,
+          leftViewer,
+          imageryLayerLeftRef,
+          boundaryMaskLeftEntitiesRef,
+          {
+            splitDirection: SplitDirection.LEFT,
+            applyMask: false,
+            shouldFlyTo: true,
+            tileMaxZoom: left.tileMaxZoom,
+            tileMinZoom: left.tileMinZoom,
+            skipAbortPrevious: true,
+          },
+        );
+        await loadRasterByCog(
+          right.extent,
+          right.tileTemplateUrl,
+          right.boundaries,
+          leftViewer,
+          imageryLayerRightRef,
+          boundaryMaskRightEntitiesRef,
+          {
+            splitDirection: SplitDirection.RIGHT,
+            applyMask: false,
+            shouldFlyTo: false,
+            tileMaxZoom: right.tileMaxZoom,
+            tileMinZoom: right.tileMinZoom,
+            skipAbortPrevious: true,
+          },
+        );
+        leftViewer.scene.splitPosition = 0.5;
+        if (rightViewer) rightViewer.scene.splitPosition = 1.0;
+        return true;
+      }
+    }
+
+    const croplandData = snap.cropland_data;
+    if (croplandData && typeof croplandData === 'object') {
+      const data = croplandData as Record<string, unknown>;
+      const place = typeof data.place === 'string' ? data.place : '';
+      const sy = Number(data.startYear);
+      const sm = Number(data.startMonth);
+      const ey = Number(data.endYear);
+      const em = Number(data.endMonth);
+      if (place && [sy, sm, ey, em].every(Number.isFinite)) {
+        setAnalysisMode(true);
+        setCustomImageryMode(false);
+        await loadCroplandAnalysisLayers(place, sy, sm, ey, em, 50);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function buildWorkspaceState(): WorkspacePersistedStateV1 {
@@ -1416,13 +1666,13 @@ export default function AIWorkspace({
       removeRoboflowOverlayFromViewer(left);
       clearRoboflowDetectionEntities(left);
       removeImageryLayerFromViewer(left, imageryLayerLeftRef);
-      removeImageryLayerFromViewer(left, imageryLayerRightRef);
       clearBoundaryMask(left, boundaryMaskLeftEntitiesRef);
-      clearBoundaryMask(left, boundaryMaskRightEntitiesRef);
       left.scene.splitPosition = 1.0;
     }
     if (right) {
+      removeImageryLayerFromAnyViewer(imageryLayerRightRef);
       clearBoundaryMask(right, boundaryMaskRightEntitiesRef);
+      right.scene.splitPosition = 1.0;
     }
   }
 
@@ -1449,15 +1699,28 @@ export default function AIWorkspace({
         for (const l of baseLayersRightRef.current) l.show = true;
       };
 
-      if (state.analysisMode && state.croplandRestore) {
-        const r = state.croplandRestore;
+      const restoredCropland =
+        state.croplandRestore ??
+        [...state.messages]
+          .reverse()
+          .filter((m) => m.role === 'user')
+          .map((m) => parseCroplandCompareParamsFromText(m.text))
+          .find((v): v is CroplandCompareParams => v != null) ??
+        null;
+
+      if ((state.analysisMode || restoredCropland) && restoredCropland) {
+        const r = restoredCropland;
+        croplandRestoreRef.current = r;
+        setAnalysisMode(true);
+        setCustomImageryMode(false);
+        setSplitPercent(state.analysisMode ? state.splitPercent : 50);
         await loadCroplandAnalysisLayers(
           r.place,
           r.startYear,
           r.startMonth,
           r.endYear,
           r.endMonth,
-          state.splitPercent,
+          state.analysisMode ? state.splitPercent : 50,
           { skipCroplandRefUpdate: true },
         );
       } else {
@@ -1499,6 +1762,7 @@ export default function AIWorkspace({
   }
 
   function startNewWorkspaceSession() {
+    removeLegacyViewfinderOverlay();
     disconnectMultiAgent();
     setMultiAgentBusy(false);
     multiAgentCameraFlewRef.current = false;
@@ -1535,6 +1799,7 @@ export default function AIWorkspace({
     if (!file) return;
     const leftViewer = viewerLeftRef.current;
     if (!leftViewer) return;
+    removeLegacyViewfinderOverlay();
 
     const lower = file.name.toLowerCase();
     if (!/\.(tif|tiff|geotiff|cog)$/.test(lower)) {
@@ -1565,11 +1830,13 @@ export default function AIWorkspace({
       const data = (await res.json()) as RasterUploadResponse;
 
       removeImageryLayerFromViewer(leftViewer, imageryLayerLeftRef);
-      removeImageryLayerFromViewer(leftViewer, imageryLayerRightRef);
+      if (viewerRightRef.current) {
+        removeImageryLayerFromAnyViewer(imageryLayerRightRef);
+        clearBoundaryMask(viewerRightRef.current, boundaryMaskRightEntitiesRef);
+      }
       removeRoboflowOverlayFromViewer(leftViewer);
       clearRoboflowDetectionEntities(leftViewer);
       clearBoundaryMask(leftViewer, boundaryMaskLeftEntitiesRef);
-      clearBoundaryMask(leftViewer, boundaryMaskRightEntitiesRef);
 
       setAnalysisMode(false);
       setCustomImageryMode(true);
@@ -1626,6 +1893,7 @@ export default function AIWorkspace({
   async function handleSendMessage() {
     const text = chatInput.trim();
     if (!text) return;
+    removeLegacyViewfinderOverlay();
 
     const isRoboflowIntent = looksRoboflowFeatureInstruction(text);
     if (isRoboflowIntent && roboflowWorkflowInProgressRef.current) {
@@ -1771,6 +2039,7 @@ export default function AIWorkspace({
     if (shouldRunMultiAgentAnalysis(text)) {
       setMultiAgentBusy(true);
       multiAgentCameraFlewRef.current = false;
+      multiAgentCroplandFallbackLoadedRef.current = false;
       setChatMessages((prev) => [
         ...prev,
         {
@@ -1795,6 +2064,24 @@ export default function AIWorkspace({
         });
       };
 
+      const loadCroplandFallbackFromUserText = async () => {
+        if (multiAgentCroplandFallbackLoadedRef.current) return false;
+        const parsed = parseCroplandCompareParamsFromText(text);
+        if (!parsed) return false;
+        multiAgentCroplandFallbackLoadedRef.current = true;
+        setAnalysisMode(true);
+        setCustomImageryMode(false);
+        await loadCroplandAnalysisLayers(
+          parsed.place,
+          parsed.startYear,
+          parsed.startMonth,
+          parsed.endYear,
+          parsed.endMonth,
+          50,
+        );
+        return true;
+      };
+
       const leftViewer = viewerLeftRef.current;
       void runMultiAgentAnalysis(text, {
         onThinking: (displayText) => {
@@ -1806,6 +2093,35 @@ export default function AIWorkspace({
           });
         },
         onSnapshot: (snap: TaskRedisSnapshot) => {
+          if (snap.analysis_type === 'cropland_change' || snap.analysis_intent === 'cropland_change' || snap.change_layers) {
+            void loadChangeLayersFromSnapshot(snap)
+              .then((loaded) => {
+                if (loaded) multiAgentCameraFlewRef.current = true;
+              })
+              .catch((e) => {
+                const msg = e instanceof Error ? e.message : String(e);
+                console.warn('[cropland/change_layers]', msg);
+                replaceMultiAgentPending({
+                  role: 'assistant',
+                  text: `耕地变化影像加载失败：${msg}`,
+                  thinking: false,
+                });
+              });
+            return;
+          }
+          void loadCroplandFallbackFromUserText()
+            .then((loaded) => {
+              if (loaded) multiAgentCameraFlewRef.current = true;
+            })
+            .catch((e) => {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn('[cropland/local-fallback]', msg);
+              replaceMultiAgentPending({
+                role: 'assistant',
+                text: `耕地变化本地影像加载失败：${msg}`,
+                thinking: false,
+              });
+            });
           if (!leftViewerForCmd || !(snap.tile_url || snap.download_url || snap.region_coords)) {
             return;
           }
@@ -1827,7 +2143,21 @@ export default function AIWorkspace({
           replaceMultiAgentPending({
             role: 'assistant',
             text: answer,
+            chartOption: snap.chartOption,
             thinking: false,
+          });
+          if (snap.analysis_type === 'cropland_change' || snap.analysis_intent === 'cropland_change' || snap.change_layers) {
+            void loadChangeLayersFromSnapshot(snap).catch((e) => {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn('[cropland/change_layers]', msg);
+              setChatMessages((prev) => [...prev, { role: 'assistant', text: `耕地变化影像加载失败：${msg}` }]);
+            });
+            return;
+          }
+          void loadCroplandFallbackFromUserText().catch((e) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn('[cropland/local-fallback]', msg);
+            setChatMessages((prev) => [...prev, { role: 'assistant', text: `耕地变化本地影像加载失败：${msg}` }]);
           });
           if (leftViewer) {
             void applyTaskSnapshotToViewer(
@@ -1955,6 +2285,7 @@ export default function AIWorkspace({
       baseLayerPicker: true,
       imageryProviderViewModels,
       selectedImageryProviderViewModel,
+      useDefaultRenderLoop: false,
       fullscreenButton: false,
       geocoder: false,
       homeButton: true,
@@ -2102,9 +2433,11 @@ export default function AIWorkspace({
       }
 
       if (!alive || leftViewer.isDestroyed() || rightViewer.isDestroyed()) return;
-      // 重新抓取底图 layers，保证后续 analysisMode 开/关能准确显隐
-      baseLayersLeftRef.current = captureBaseLayers(leftViewer);
-      baseLayersRightRef.current = captureBaseLayers(rightViewer);
+      if (!imageryLayerLeftRef.current && !imageryLayerRightRef.current && !customImageryMode) {
+        // 仅在尚未加载分析影像时刷新默认底图列表，避免把耕地分屏影像误当底图隐藏。
+        baseLayersLeftRef.current = captureBaseLayers(leftViewer);
+        baseLayersRightRef.current = captureBaseLayers(rightViewer);
+      }
 
       // 根据当前模式修正底图显隐
       const visible = !analysisModeRef.current;
@@ -2112,9 +2445,7 @@ export default function AIWorkspace({
       for (const l of baseLayersRightRef.current) l.show = visible;
 
       leftViewer.resize();
-      rightViewer.resize();
       leftViewer.scene.requestRender();
-      rightViewer.scene.requestRender();
     })();
 
     setCesiumReady(true);
@@ -2217,24 +2548,18 @@ export default function AIWorkspace({
     };
   }, [chatMessages, analysisMode, customImageryMode, splitPercent, cesiumReady, sessionRestoring]);
 
-  // 分屏位置：仅分析模式使用 splitPercent；否则必须 1.0，否则单层影像在 split 管线里会像「整屏空白/全蓝」
+  // 耕地变化使用同一个 Viewer 的左右裁切图层，缩放和平移天然共享同一个相机。
   useEffect(() => {
-    viewerLeftRef.current?.resize();
-    viewerRightRef.current?.resize();
-    const v = viewerLeftRef.current;
-    if (!v) return;
-    if (analysisMode) {
-      v.scene.splitPosition = Math.max(0.05, Math.min(0.95, splitPercent / 100));
-    } else {
-      v.scene.splitPosition = 1.0;
+    const left = viewerLeftRef.current;
+    if (left && !left.isDestroyed()) {
+      left.scene.splitPosition = Math.max(0.05, Math.min(0.95, splitPercent / 100));
+      left.scene.requestRender();
     }
-    v.scene.requestRender();
   }, [splitPercent, analysisMode]);
 
   useEffect(() => {
     // 切换 analysisMode 时也要触发布局重算
     viewerLeftRef.current?.resize();
-    viewerRightRef.current?.resize();
 
     const leftViewer = viewerLeftRef.current;
     const rightViewer = viewerRightRef.current;
@@ -2279,29 +2604,8 @@ export default function AIWorkspace({
       if (!customImageryMode) {
         removeRoboflowOverlayFromViewer(leftViewer);
         clearRoboflowDetectionEntities(leftViewer);
-        const removeLayerFromViewer = (viewer: Viewer, layer: ImageryLayer | null) => {
-          if (!layer) return;
-          try {
-            viewer.imageryLayers.remove(layer, true);
-          } catch {
-            // ignore
-          }
-        };
-        try {
-          removeLayerFromViewer(leftViewer, imageryLayerLeftRef.current);
-          removeLayerFromViewer(rightViewer, imageryLayerLeftRef.current);
-        } catch {
-          // ignore
-        }
-        imageryLayerLeftRef.current = null;
-
-        try {
-          removeLayerFromViewer(leftViewer, imageryLayerRightRef.current);
-          removeLayerFromViewer(rightViewer, imageryLayerRightRef.current);
-        } catch {
-          // ignore
-        }
-        imageryLayerRightRef.current = null;
+        removeImageryLayerFromAnyViewer(imageryLayerLeftRef);
+        removeImageryLayerFromAnyViewer(imageryLayerRightRef);
 
         clearBoundaryMask(leftViewer, boundaryMaskLeftEntitiesRef);
         clearBoundaryMask(rightViewer, boundaryMaskRightEntitiesRef);
@@ -2470,17 +2774,20 @@ export default function AIWorkspace({
           />
           <div
             ref={cesiumRightContainerRef}
-            className="absolute top-0 bottom-0"
+            className="absolute top-0 bottom-0 transition-[clip-path,opacity] duration-150"
             style={{
               inset: 0,
-              width: 0,
-              zIndex: 0,
-              // 右侧即使可见也不接收鼠标事件，避免缩放/拖拽只作用于一边
+              width: '100%',
+              display: 'none',
+              zIndex: -1,
+              opacity: 0,
+              clipPath: 'inset(0 0 0 100%)',
+              backgroundColor: '#fff',
               pointerEvents: 'none',
             }}
           />
           <div
-            className="absolute top-0 bottom-0 w-px bg-white/90 z-10"
+            className="absolute top-0 bottom-0 w-px bg-white/90 z-30"
             style={{
               left: `${analysisMode ? splitPercent : 100}%`,
               pointerEvents: 'none',
@@ -2488,7 +2795,7 @@ export default function AIWorkspace({
             }}
           />
           <div
-            className="absolute top-0 bottom-0 z-20"
+            className="absolute top-0 bottom-0 z-30"
             style={{
               left: `${analysisMode ? splitPercent : 100}%`,
               width: analysisMode ? 10 : 0,
@@ -2531,7 +2838,7 @@ export default function AIWorkspace({
           </div>
         </motion.div> */}
 
-        <div className="absolute right-4 top-15 flex flex-col gap-2">
+        {/* <div className="absolute right-4 top-15 flex flex-col gap-2">
           <div className="bg-white border border-slate-200 rounded-md shadow-sm p-1 flex flex-col gap-1">
             <button className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-indigo-600 rounded"><ZoomIn className="w-4 h-4" /></button>
             <button className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-indigo-600 rounded"><ZoomOut className="w-4 h-4" /></button>
@@ -2558,14 +2865,8 @@ export default function AIWorkspace({
             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm" />
             <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">LIVE CONNECTION</span>
           </div>
-        </div>
+        </div> */}
 
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 border border-indigo-500/30 rounded pointer-events-none">
-          <div className="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-indigo-500" />
-          <div className="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 border-indigo-500" />
-          <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-indigo-500" />
-          <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-indigo-500" />
-        </div>
       </section>
     </div>
   );

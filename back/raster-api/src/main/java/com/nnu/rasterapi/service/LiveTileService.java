@@ -57,7 +57,6 @@ public class LiveTileService {
             String cogUrl = cogUrls.get(i);
             BufferedImage img = fetchTitilerTile(z, x, y, cogUrl);
             if (img == null) continue;
-            // 关键：按每一景自己的 footprint 几何裁剪，保证“几何拼接”能发生
             if (footprints != null && i < footprints.size()) {
                 List<List<LiveImageryService.LngLat>> fpRings = footprints.get(i);
                 if (fpRings != null && !fpRings.isEmpty()) {
@@ -71,7 +70,6 @@ public class LiveTileService {
         }
 
         if (composed == null) {
-            // 对没有命中影像的瓦片返回透明图，避免前端因 4xx/5xx 连续报错导致整层不可见
             return transparentTile(tileSize, tileSize);
         }
 
@@ -82,10 +80,14 @@ public class LiveTileService {
 
     private BufferedImage fetchTitilerTile(int z, int x, int y, String cogUrl) {
         try {
+            CogTileSource source = parseCogTileSource(cogUrl);
             String url = titilerBaseUrl.replaceAll("/$", "") +
                     "/cog/tiles/WebMercatorQuad/" + z + "/" + x + "/" + y + ".png" +
-                    "?url=" + URLEncoder.encode(cogUrl, StandardCharsets.UTF_8) +
+                    "?url=" + URLEncoder.encode(source.url(), StandardCharsets.UTF_8) +
                     "&tilesize=" + tileSize;
+            if (!source.extraParams().isBlank()) {
+                url += "&" + source.extraParams();
+            }
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -103,6 +105,19 @@ public class LiveTileService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static CogTileSource parseCogTileSource(String raw) {
+        if (raw == null) {
+            return new CogTileSource("", "");
+        }
+        int marker = raw.lastIndexOf("|params=");
+        if (marker < 0) {
+            return new CogTileSource(raw, "");
+        }
+        String url = raw.substring(0, marker);
+        String params = raw.substring(marker + "|params=".length()).trim();
+        return new CogTileSource(url, params);
     }
 
     private BufferedImage applyPolygonMask(
@@ -149,7 +164,6 @@ public class LiveTileService {
     }
 
     private static Pixel lonLatToTilePixel(int z, int x, int y, double lon, double lat, int tileSize) {
-        // WebMercator (EPSG:3857) tile coordinate -> pixel
         double latClamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
         double n = Math.pow(2.0, z);
         double xGlobal = (lon + 180.0) / 360.0 * n * tileSize;
@@ -178,7 +192,7 @@ public class LiveTileService {
             for (int x = 0; x < width; x++) {
                 int baseArgb = base.getRGB(x, y);
                 int baseAlpha = (baseArgb >>> 24) & 0xFF;
-                if (baseAlpha != 0) continue; // 仅填补透明洞，不覆盖已有像素
+                if (baseAlpha != 0) continue;
                 int overArgb = overlay.getRGB(x, y);
                 int overAlpha = (overArgb >>> 24) & 0xFF;
                 if (overAlpha == 0) continue;
@@ -194,5 +208,7 @@ public class LiveTileService {
 
     private record Pixel(double x, double y) {
     }
-}
 
+    private record CogTileSource(String url, String extraParams) {
+    }
+}

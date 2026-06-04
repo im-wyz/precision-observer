@@ -1,5 +1,3 @@
-/** v2：LangGraph 异步任务（Spring → Python → Redis） */
-
 export type AgentTaskState = {
   task_id?: string;
   status?: string;

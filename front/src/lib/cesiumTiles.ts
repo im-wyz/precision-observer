@@ -1,5 +1,3 @@
-/** TiTiler 瓦片 URL 与任务结果解析（供 Cesium UrlTemplateImageryProvider 使用） */
-
 import type { TaskRedisSnapshot } from '../api/tasks';
 
 export type Extent = { minLng: number; minLat: number; maxLng: number; maxLat: number };
@@ -22,13 +20,22 @@ export function rewriteTileTemplateUrlForBrowser(template: string): string {
   try {
     const parsed = new URL(trimmed);
     const path = parsed.pathname;
-    if (dev && useProxy && typeof window !== 'undefined' && path.includes('/cog/') && !path.includes(proxyPrefix)) {
-      return `${window.location.origin}${proxyPrefix}${path}${parsed.search}`;
+    if (path.includes('/cog/tiles/') && !parsed.searchParams.has('rescale')) {
+      parsed.searchParams.set('rescale', '-0.5,0.9');
+    }
+    if (path.includes('/cog/tiles/') && !parsed.searchParams.has('colormap_name')) {
+      parsed.searchParams.set('colormap_name', 'viridis');
+    }
+    const templatePath = decodeURIComponent(parsed.pathname);
+    const styled = `${parsed.protocol}//${parsed.host}${templatePath}${parsed.search}`;
+    if (dev && useProxy && typeof window !== 'undefined' && templatePath.includes('/cog/') && !templatePath.includes(proxyPrefix)) {
+      return `${window.location.origin}${proxyPrefix}${templatePath}${parsed.search}`;
     }
     if (titilerPublicBase) {
       const want = new URL(titilerPublicBase);
-      return template.replace(`${parsed.protocol}//${parsed.host}`, `${want.protocol}//${want.host}`);
+      return styled.replace(`${parsed.protocol}//${parsed.host}`, `${want.protocol}//${want.host}`);
     }
+    return styled;
   } catch {
     return template;
   }
@@ -41,11 +48,10 @@ export function getTitilerBase(): string {
   return raw;
 }
 
-/** 由 COG HTTP URL 构造 TiTiler WebMercatorQuad 瓦片模板 */
 export function buildTitilerTileTemplate(cogHttpUrl: string): string {
   const base = getTitilerBase();
   const encoded = encodeURIComponent(cogHttpUrl);
-  return `${base}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encoded}`;
+  return `${base}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encoded}&rescale=-0.5,0.9&colormap_name=viridis`;
 }
 
 export function extractTileUrlFromSnapshot(snap: TaskRedisSnapshot): string | null {
@@ -67,7 +73,6 @@ export function extractTileUrlFromSnapshot(snap: TaskRedisSnapshot): string | nu
   return null;
 }
 
-/** 演示/mock 或 TiTiler 无法拉取的地址，不生成瓦片模板 */
 export function isNonTitilerCogUrl(url: string): boolean {
   const u = url.toLowerCase();
   return u.includes('mock-cog') || u.includes('/mock/') || u.includes('?region=bbox_');
@@ -148,14 +153,18 @@ export type TaskMapPayload = {
 
 export function extractMapPayloadFromSnapshot(snap: TaskRedisSnapshot): TaskMapPayload {
   const tileUrl = extractTileUrlFromSnapshot(snap);
-  const extent = coordsToExtent(snap.region_coords) ?? {
-    minLng: 119.8,
-    minLat: 31.0,
-    maxLng: 120.6,
-    maxLat: 31.6,
+  const meta = snap.meta as Record<string, unknown> | undefined;
+  const extent =
+    extentFromObject(snap.extent) ??
+    extentFromObject(meta?.extent) ??
+    coordsToExtent(snap.region_coords) ?? {
+    minLng: 119.7,
+    minLat: 30.85,
+    maxLng: 120.7,
+    maxLat: 31.65,
   };
   const metrics = snap.metrics as Record<string, unknown> | undefined;
-  const simulated = metrics?.simulated === true || snap.meta && (snap.meta as Record<string, unknown>).simulated === true;
+  const simulated = metrics?.simulated === true || (meta && meta.simulated === true);
 
   return {
     tileUrl: tileUrl && !simulated && !isNonTitilerCogUrl(tileUrl) ? tileUrl : null,
@@ -164,4 +173,17 @@ export function extractMapPayloadFromSnapshot(snap: TaskRedisSnapshot): TaskMapP
     tileMaxZoom: typeof snap.tile_max_zoom === 'number' ? snap.tile_max_zoom : undefined,
     tileMinZoom: typeof snap.tile_min_zoom === 'number' ? snap.tile_min_zoom : undefined,
   };
+}
+
+function extentFromObject(value: unknown): Extent | null {
+  if (!value || typeof value !== 'object') return null;
+  const o = value as Record<string, unknown>;
+  const minLng = Number(o.minLng ?? o.min_lng);
+  const minLat = Number(o.minLat ?? o.min_lat);
+  const maxLng = Number(o.maxLng ?? o.max_lng);
+  const maxLat = Number(o.maxLat ?? o.max_lat);
+  if ([minLng, minLat, maxLng, maxLat].every(Number.isFinite)) {
+    return { minLng, minLat, maxLng, maxLat };
+  }
+  return null;
 }

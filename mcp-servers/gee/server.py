@@ -27,13 +27,21 @@ mcp = FastMCP("gee-mcp", host=_mcp_host, port=_mcp_port)
 
 @mcp.tool()
 def resolve_region(user_message: str, region_coords_json: str = "[]") -> str:
-    """从用户文案或 bbox JSON 解析 WGS84 范围 [min_lng, min_lat, max_lng, max_lat]。"""
+    """从用户文案或坐标 JSON 解析 WGS84 bbox 范围。"""
     try:
         coords = json.loads(region_coords_json) if region_coords_json else []
     except json.JSONDecodeError:
         coords = []
-    bbox = resolve_region_coords(user_message, coords)
-    return json.dumps({"bbox": bbox, "place_hint": user_message[:80]}, ensure_ascii=False)
+    region = resolve_region_coords(user_message, coords)
+    extent = None
+    if isinstance(region, list) and len(region) >= 4 and all(isinstance(x, (int, float)) for x in region[:4]):
+        extent = region[:4]
+    elif isinstance(region, list) and region and isinstance(region[0], list):
+        lngs = [float(p[0]) for p in region if isinstance(p, list) and len(p) >= 2]
+        lats = [float(p[1]) for p in region if isinstance(p, list) and len(p) >= 2]
+        if lngs and lats:
+            extent = [min(lngs), min(lats), max(lngs), max(lats)]
+    return json.dumps({"region_coords": region, "extent": extent, "place_hint": user_message[:80]}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -52,13 +60,14 @@ def run_analysis(
     analysis_type: str = "",
 ) -> str:
     """
-    执行遥感分析（GEE 或演示模拟）。region_coords_json 为 bbox 数组 JSON。
+    执行遥感分析（GEE 或演示模拟）。region_coords_json 最终应为 bbox 数组 JSON。
     返回 report_title、report_summary、metrics、cog_path、download_url、tile_url 等。
     """
     try:
-        region = json.loads(region_coords_json)
+        raw_region = json.loads(region_coords_json)
     except json.JSONDecodeError:
-        region = resolve_region_coords(user_message, [])
+        raw_region = []
+    region = resolve_region_coords(user_message, raw_region)
     atype = analysis_type.strip() or detect_analysis_intent(user_message)
     result = run_remote_sensing_analysis(user_message, region, start_date, end_date, analysis_type=atype)
     return json.dumps(
@@ -69,6 +78,8 @@ def run_analysis(
             "cog_path": result.cog_path,
             "download_url": result.download_url,
             "tile_url": result.tile_url,
+            "geojson": result.meta.get("geojson"),
+            "vector_boundary": result.meta.get("geojson"),
             "report_title": result.report_title,
             "report_summary": result.report_summary,
             "metrics": result.metrics,

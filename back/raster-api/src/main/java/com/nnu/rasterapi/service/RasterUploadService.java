@@ -103,9 +103,7 @@ public class RasterUploadService {
         } catch (Exception e) {
             try {
                 Files.deleteIfExists(dest);
-            } catch (Exception ignored) {
-                // ignore cleanup failure
-            }
+            } catch (Exception ignored) {}
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "保存文件失败: " + formatThrowable(e));
         }
 

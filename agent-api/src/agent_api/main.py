@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field
 from .agents import MAX_ANALYST_ROUNDS
 from .graph import AnalysisState, run_analysis_workflow
 from .redis_progress import finalize_task, init_task, publish_progress, read_task
-from .tools.intent import detect_analysis_intent
+from .tools.gee_tools import export_true_color
+from .tools.intent import detect_analysis_intent, extract_index_key
 from .tools.region_catalog import resolve_region_coords
 
 
@@ -51,15 +52,34 @@ class AnalyzeRequest(BaseModel):
     message: str = Field(..., min_length=1, description="用户自然语言需求")
     region_coords: list[Any] = Field(
         default_factory=list,
-        description="区域坐标：bbox [min_lng,min_lat,max_lng,max_lat] 或多边形点列",
+        description="区域坐标：bbox [min_lng,min_lat,max_lng,max_lat]；点列会归一化为外接 bbox",
     )
     start_date: str = Field(..., description="起始日期 YYYY-MM-DD")
     end_date: str = Field(..., description="结束日期 YYYY-MM-DD")
+    compare_start_date: str = Field(default="", description="变化检测第二期起始日期 YYYY-MM-DD")
+    compare_end_date: str = Field(default="", description="变化检测第二期结束日期 YYYY-MM-DD")
 
 
 class AnalyzeResponse(BaseModel):
     task_id: str
     status: str
+
+
+class GeeTrueColorRequest(BaseModel):
+    """Spring 影像对比调用的 GEE 真彩色导出请求。"""
+
+    message: str = Field(default="GEE 真彩色影像")
+    region_coords: list[Any] = Field(default_factory=list)
+    start_date: str
+    end_date: str
+
+
+class GeeTrueColorResponse(BaseModel):
+    ok: bool
+    message: str
+    cog_path: str = ""
+    download_url: str = ""
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 def _build_initial_state(task_id: str, body: AnalyzeRequest) -> AnalysisState:
@@ -71,7 +91,10 @@ def _build_initial_state(task_id: str, body: AnalyzeRequest) -> AnalysisState:
         "region_coords": region,
         "start_date": body.start_date,
         "end_date": body.end_date,
+        "compare_start_date": body.compare_start_date,
+        "compare_end_date": body.compare_end_date,
         "analysis_intent": intent,
+        "index_key": extract_index_key(body.message) or "",
         "analyst_round": 0,
         "engineer_ok": False,
         "inspector_pass": False,
@@ -123,8 +146,15 @@ def _run_workflow(task_id: str, body: AnalyzeRequest) -> None:
             status=_final_status(final),
             answer=_answer_from_final(final),
             region_coords=initial["region_coords"],
+            compare_start_date=final.get("compare_start_date") or initial.get("compare_start_date"),
+            compare_end_date=final.get("compare_end_date") or initial.get("compare_end_date"),
             analysis_intent=initial["analysis_intent"],
             analysis_type=final.get("analysis_intent") or initial["analysis_intent"],
+            index_key=final.get("index_key") or initial.get("index_key"),
+            source_kind=final.get("source_kind"),
+            source_scene_id=final.get("source_scene_id"),
+            band_map=final.get("band_map"),
+            boundaries=final.get("boundaries"),
             director_output=final.get("director_output"),
             analyst_output=final.get("analyst_output"),
             engineer_output=final.get("engineer_output"),
@@ -135,9 +165,18 @@ def _run_workflow(task_id: str, body: AnalyzeRequest) -> None:
             download_url=final.get("download_url"),
             tile_url=final.get("tile_url"),
             tileUrl=final.get("tile_url"),
+            geojson=final.get("geojson") or (final.get("meta") or {}).get("geojson"),
+            vector_boundary=final.get("vector_boundary") or final.get("geojson") or (final.get("meta") or {}).get("geojson"),
             report_title=final.get("report_title"),
             report_summary=final.get("report_summary"),
             metrics=final.get("metrics"),
+            chartOption=final.get("chartOption"),
+            cropland_data=final.get("cropland_data"),
+            change_layers=final.get("change_layers"),
+            preprocess_steps=final.get("preprocess_steps"),
+            gdal_commands=final.get("gdal_commands"),
+            warnings=final.get("warnings") or (final.get("meta") or {}).get("warnings"),
+            meta=final.get("meta"),
             message=final.get("message"),
         )
     except Exception as exc:
@@ -152,6 +191,22 @@ def health() -> dict[str, str]:
         "status": "ok",
         "llm_key_configured": str(bool(_llm_api_key())).lower(),
     }
+
+
+@app.post("/gee/true-color", response_model=GeeTrueColorResponse)
+def gee_true_color(body: GeeTrueColorRequest) -> GeeTrueColorResponse:
+    """导出指定区域和时间范围的 Sentinel-2 GEE 真彩色影像。"""
+    region = resolve_region_coords(body.message, body.region_coords)
+    result = export_true_color(region, body.start_date, body.end_date)
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.message)
+    return GeeTrueColorResponse(
+        ok=result.ok,
+        message=result.message,
+        cog_path=result.cog_path,
+        download_url=result.download_url,
+        meta=result.meta,
+    )
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)

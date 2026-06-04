@@ -1,10 +1,10 @@
-/** Spring Boot 遥感分析任务 API（POST /api/tasks + STOMP /topic/task/{id}） */
-
 export type TaskCreatePayload = {
   message: string;
   regionCoords?: Array<number | [number, number]>;
   startDate: string;
   endDate: string;
+  compareStartDate?: string;
+  compareEndDate?: string;
 };
 
 export type TaskResponse = {
@@ -24,7 +24,6 @@ export type TaskResponse = {
   updatedAt?: string;
 };
 
-/** Redis / STOMP 推送的完整任务快照 */
 export type TaskRedisSnapshot = {
   task_id?: string;
   status?: string;
@@ -32,6 +31,8 @@ export type TaskRedisSnapshot = {
   region_coords?: unknown[];
   start_date?: string;
   end_date?: string;
+  compare_start_date?: string;
+  compare_end_date?: string;
   answer?: string;
   cog_path?: string;
   download_url?: string;
@@ -53,6 +54,12 @@ export type TaskRedisSnapshot = {
   report_title?: string;
   report_summary?: string;
   metrics?: Record<string, string | number | boolean>;
+  chartOption?: Record<string, unknown>;
+  cropland_data?: Record<string, unknown>;
+  change_layers?: Record<string, unknown>;
+  preprocess_steps?: Array<Record<string, unknown>>;
+  gdal_commands?: string[];
+  warnings?: string[];
   [key: string]: unknown;
 };
 
@@ -84,6 +91,8 @@ export async function createAnalysisTask(
       regionCoords: payload.regionCoords ?? [],
       startDate: payload.startDate,
       endDate: payload.endDate,
+      compareStartDate: payload.compareStartDate,
+      compareEndDate: payload.compareEndDate,
     }),
   });
   if (!res.ok) {
@@ -102,7 +111,6 @@ export async function getAnalysisTask(baseUrl: string, taskId: string): Promise<
   return (await res.json()) as TaskResponse;
 }
 
-/** Redis 全量快照（与 STOMP 推送体一致）；WebSocket 不可用时轮询此接口 */
 export async function getTaskSnapshot(baseUrl: string, taskId: string): Promise<TaskRedisSnapshot> {
   const res = await fetch(
     `${baseUrl.replace(/\/$/, '')}/api/tasks/${encodeURIComponent(taskId)}/snapshot`,
@@ -116,7 +124,6 @@ export async function getTaskSnapshot(baseUrl: string, taskId: string): Promise<
 
 export function isTerminalTaskStatus(status: string | undefined): boolean {
   const st = (status ?? '').toLowerCase();
-  // Python 只有在达到最大重试轮次后才会把 engineer_failed 写成最终状态。
   return (
     st === 'completed' ||
     st === 'completed_with_warnings' ||

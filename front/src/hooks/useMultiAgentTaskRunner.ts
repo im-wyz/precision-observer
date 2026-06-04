@@ -9,7 +9,7 @@ import {
   type TaskCreatePayload,
   type TaskRedisSnapshot,
 } from '../api/tasks';
-import { defaultAnalysisDates, resolveRegionFromMessage } from '../lib/regionFromMessage';
+import { resolveAnalysisDatesFromMessage, resolveRegionFromMessage } from '../lib/regionFromMessage';
 
 export const MULTI_AGENT_PENDING_KEY = '__multi_agent_pending__';
 
@@ -80,9 +80,7 @@ export function useMultiAgentTaskRunner(apiBase: string) {
     if (c) {
       try {
         c.deactivate();
-      } catch {
-        // ignore
-      }
+      } catch {}
       clientRef.current = null;
     }
   }, [stopPolling]);
@@ -102,13 +100,15 @@ export function useMultiAgentTaskRunner(apiBase: string) {
       disconnect();
       progressLenRef.current = 0;
 
-      const dates = defaultAnalysisDates();
+      const dates = resolveAnalysisDatesFromMessage(userMessage);
       const region = resolveRegionFromMessage(userMessage);
       const payload: TaskCreatePayload = {
         message: userMessage,
         regionCoords: region,
         startDate: dates.startDate,
         endDate: dates.endDate,
+        compareStartDate: dates.compareStartDate,
+        compareEndDate: dates.compareEndDate,
       };
 
       let taskId: string;
@@ -188,17 +188,12 @@ export function useMultiAgentTaskRunner(apiBase: string) {
           client.subscribe(`/topic/task/${taskId}`, (message: IMessage) => {
             try {
               handleSnap(JSON.parse(message.body) as TaskRedisSnapshot);
-            } catch {
-              // ignore parse errors
-            }
+            } catch {}
           });
           void pollOnce();
         },
         onStompError: (frame) => {
           handlers.onError(frame.headers['message'] || frame.body || 'WebSocket 连接失败');
-        },
-        onWebSocketClose: () => {
-          // STOMP 断开时仍靠 HTTP 轮询 Redis 快照
         },
       });
 

@@ -8,14 +8,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * 轻量 AI 代理服务（规则版）。
- * <p>
- * 说明：
- * - 当前先实现“耕地面积变化”场景。
- * - 耕地面积由 CroplandAnalysisService 基于 STAC + TiTiler 瓦片计算。
- * - 返回 answer + echarts option，前端可直接展示。
- */
 @Service
 public class AgentChatService {
     private final LlmIntentTool llmIntentTool;
@@ -26,9 +18,6 @@ public class AgentChatService {
         this.croplandAnalysisService = croplandAnalysisService;
     }
 
-    /**
-     * 处理用户自然语言。
-     */
     public AgentChatResponse handle(String message) {
         String text = message == null ? "" : message.trim();
         if (text.isEmpty()) {
@@ -72,10 +61,6 @@ public class AgentChatService {
         return AgentChatResponse.of(answer, "cropland_change", buildCroplandChartOption(result), buildData(result));
     }
 
-    /**
-     * 构造 ECharts option。
-     * 前端拿到后直接 setOption 即可渲染柱状图。
-     */
     private Map<String, Object> buildCroplandChartOption(CroplandAnalysisService.CroplandChangeResult result) {
         Map<String, Object> option = new LinkedHashMap<>();
 
@@ -143,9 +128,6 @@ public class AgentChatService {
         return data;
     }
 
-    /**
-     * 对外返回对象。
-     */
     public record AgentChatResponse(
             String answer,
             String intent,
@@ -162,4 +144,3 @@ public class AgentChatService {
         }
     }
 }
-

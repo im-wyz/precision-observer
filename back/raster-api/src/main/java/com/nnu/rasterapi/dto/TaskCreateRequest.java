@@ -9,6 +9,8 @@ public record TaskCreateRequest(
         String message,
         List<Object> regionCoords,
         String startDate,
-        String endDate
+        String endDate,
+        String compareStartDate,
+        String compareEndDate
 ) {
 }

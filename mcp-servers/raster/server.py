@@ -31,7 +31,7 @@ def build_tile_template(cog_http_url: str) -> str:
     if "mock-cog" in cog_http_url.lower():
         return json.dumps({"ok": False, "message": "mock-cog 无法被 TiTiler 读取", "tile_url": ""}, ensure_ascii=False)
     enc = quote(cog_http_url, safe="")
-    tpl = f"{TITILER_PUBLIC}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}?url={enc}"
+    tpl = f"{TITILER_PUBLIC}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}?url={enc}&rescale=-0.5,0.9&colormap_name=viridis"
     return json.dumps({"ok": True, "tile_url": tpl, "titiler_base": TITILER_PUBLIC}, ensure_ascii=False)
 
 

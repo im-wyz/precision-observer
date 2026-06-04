@@ -78,7 +78,6 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - minio
-      - titiler
 
   mcp-gdal:
     build:
@@ -107,11 +106,9 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8103"
       TITILER_PUBLIC_BASE_URL: http://127.0.0.1:8000
-      TITILER_INTERNAL_URL: http://titiler:8000
+      TITILER_INTERNAL_URL: http://host.docker.internal:8000
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      - titiler
 
   mcp-storage:
     build:

@@ -84,9 +84,7 @@ export default function ResourceLibrary({ onOpenWorkspaceSession, onCreateWorksp
         try {
           const err = (await res.json()) as { message?: string };
           if (err.message) msg = err.message;
-        } catch {
-          // ignore
-        }
+        } catch {}
         throw new Error(msg);
       }
       setSessions((prev) => prev.filter((s) => s.id !== session.id));

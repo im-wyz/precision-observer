@@ -21,7 +21,14 @@ class AnalysisState(TypedDict, total=False):
     region_coords: list[Any]
     start_date: str
     end_date: str
+    compare_start_date: str
+    compare_end_date: str
     analysis_intent: str
+    index_key: str
+    source_kind: str
+    source_scene_id: str
+    band_map: dict[str, Any]
+    boundaries: list[Any]
     director_output: str
     analyst_output: str
     engineer_output: str
@@ -32,9 +39,18 @@ class AnalysisState(TypedDict, total=False):
     cog_path: str
     download_url: str
     tile_url: str
+    geojson: dict[str, Any]
+    vector_boundary: dict[str, Any]
+    meta: dict[str, Any]
     report_title: str
     report_summary: str
     metrics: dict[str, Any]
+    chartOption: dict[str, Any]
+    cropland_data: dict[str, Any]
+    change_layers: dict[str, Any]
+    preprocess_steps: list[Any]
+    gdal_commands: list[str]
+    warnings: list[Any]
     final_answer: str
     message: str
     status: str
