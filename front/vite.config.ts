@@ -20,7 +20,7 @@ export default defineConfig(({mode}) => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // File watching is disabled there to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // 浏览器从 localhost:3000 直连 localhost:8000 的 TiTiler 瓦片常遇跨域；开发时走同源代理可加 CORS
       proxy: {

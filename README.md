@@ -76,6 +76,13 @@ secrets/gee-service-account.json
 .\scripts\clean.cmd
 ```
 
+## 仓库规范
+
+- 前端统一使用 `npm` 和 `front/package-lock.json`，不要同时提交其他包管理器锁文件。
+- `.env`、真实密钥、`node_modules`、`dist`、`target`、`__pycache__`、导出的栅格和临时瓦片不要提交。
+- 通用缩进、编码和换行规则由根目录 `.editorconfig` 约束。
+- IDE 配置保留在本机，不进入仓库；团队共享配置应放到 `docs/` 或脚本中说明。
+
 ## 项目结构
 
 标准项目结构与目录职责见 `docs/PROJECT_STRUCTURE.md`。

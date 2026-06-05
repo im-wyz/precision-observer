@@ -6,6 +6,7 @@ This repo now follows a standard agent-app layout: product surfaces live at the 
 precision-observer/
   README.md
   .gitignore
+  .editorconfig                 # 团队统一编码、缩进和换行
   scripts/
     check.ps1                    # 本地工具与端口检查
     dev.ps1                      # 一键启动本地开发环境
@@ -42,6 +43,8 @@ precision-observer/
 - 对外部能力的 MCP 封装放在 `mcp-servers`。
 - 可复用启动、检查、清理命令放在 `scripts`。
 - `.env`、`.venv`、`node_modules`、`target`、`dist`、`__pycache__`、导出的栅格和真实凭据不要提交。
+- 前端包管理统一使用 `npm`；只维护 `front/package-lock.json`。
+- IDE 项目文件、编译后的 `.class` 文件、临时瓦片图片和本地原生库只留在开发机，不进入 Git。
 
 ## Agent Package Rules
 

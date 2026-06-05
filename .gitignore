@@ -25,6 +25,7 @@ node_modules/
 front/node_modules/
 front/dist/
 dist/
+front/pnpm-lock.yaml
 
 # Java / Spring 产物
 target/
@@ -34,9 +35,11 @@ back/raster-api/target/
 agent-api/data/gee_exports/
 uploads/
 *.log
+tile_*.png
 
 # IDE 与操作系统杂项
 .idea/
+back/.idea/
 .vscode/
 .DS_Store
 Thumbs.db
