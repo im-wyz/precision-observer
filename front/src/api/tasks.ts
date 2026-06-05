@@ -56,6 +56,7 @@ export type TaskRedisSnapshot = {
   metrics?: Record<string, string | number | boolean>;
   chartOption?: Record<string, unknown>;
   cropland_data?: Record<string, unknown>;
+  water_data?: Record<string, unknown>;
   change_layers?: Record<string, unknown>;
   preprocess_steps?: Array<Record<string, unknown>>;
   gdal_commands?: string[];

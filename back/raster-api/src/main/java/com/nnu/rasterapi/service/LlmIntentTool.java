@@ -19,15 +19,12 @@ import java.time.YearMonth;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * LLM 意图解析：默认接阿里云 DashScope OpenAI 兼容接口（通义等），请求体与 OpenAI chat/completions 一致。
- */
 @Service
 public class LlmIntentTool {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern JSON_BLOCK = Pattern.compile("\\{[\\s\\S]*}");
     private static final Pattern YYYY_MM = Pattern.compile("(20\\d{2})\\s*年\\s*(1[0-2]|0?[1-9])\\s*月");
-    private static final Pattern PLACE_TOKEN = Pattern.compile("([\\u4e00-\\u9fa5]{2,20})(市|区|县)?");
+    private static final Pattern PLACE_TOKEN = Pattern.compile("([\\u4e00-\\u9fa5]{2,20})(市|区|县|湖)?");
 
     private final HttpClient httpClient;
     private final String baseUrl;
@@ -49,6 +46,11 @@ public class LlmIntentTool {
     }
 
     public ParsedIntent parseIntent(String message) {
+        ParsedIntent local = parseIntentFallback(message);
+        if (!"unknown".equals(local.intent())) {
+            return local;
+        }
+
         if (apiKey == null || apiKey.isBlank()) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "LLM API Key 未配置（请设置环境变量 LLM_API_KEY）");
         }
@@ -64,15 +66,16 @@ public class LlmIntentTool {
             messages.addObject().put("role", "system").put("content", """
 你是遥感分析指令解析器。请把用户输入解析成 JSON，格式严格如下：
 {
-  "intent": "cropland_change" | "unknown",
+  "intent": "cropland_change" | "water_area_change" | "unknown",
   "place": "南京",
   "startMonth": "2017-03",
   "endMonth": "2018-03"
 }
 规则：
-1) 当前只识别“耕地面积变化/对比/分析”场景，其他返回 intent=unknown
-2) startMonth/endMonth 必须是 yyyy-MM，不足时留空字符串
-3) 只输出 JSON，不要附加解释
+1) 耕地/农田面积变化、对比、分析 => cropland_change
+2) 水体/水域/水面面积变化、对比、分析 => water_area_change
+3) startMonth/endMonth 必须是 yyyy-MM，不足时留空字符串
+4) 只输出 JSON，不要附加解释
 """);
             messages.addObject().put("role", "user").put("content", message);
 
@@ -86,14 +89,13 @@ public class LlmIntentTool {
 
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-                // LLM 不可用（如余额不足/网络故障）时，降级到本地规则解析，保证功能可用
-                return parseIntentFallback(message);
+                return local;
             }
 
             JsonNode root = MAPPER.readTree(resp.body());
             String content = root.path("choices").path(0).path("message").path("content").asText("");
             if (content.isBlank()) {
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "LLM 返回内容为空");
+                return local;
             }
 
             String jsonText = extractJson(content);
@@ -103,11 +105,8 @@ public class LlmIntentTool {
             YearMonth start = parseYearMonth(parsed.path("startMonth").asText(""));
             YearMonth end = parseYearMonth(parsed.path("endMonth").asText(""));
             return new ParsedIntent(intent, place, start, end);
-        } catch (ResponseStatusException e) {
-            // 对外部服务异常也做降级，避免中断主流程
-            return parseIntentFallback(message);
         } catch (Exception e) {
-            return parseIntentFallback(message);
+            return local;
         }
     }
 
@@ -126,16 +125,15 @@ public class LlmIntentTool {
         }
     }
 
-    /**
-     * 本地规则兜底：
-     * - 识别“耕地/农田 + 变化/对比/分析”
-     * - 提取地名与两个年月
-     */
     private static ParsedIntent parseIntentFallback(String message) {
         String text = message == null ? "" : message.trim();
-        boolean croplandIntent = (text.contains("耕地") || text.contains("农田") || text.contains("耕地面积"))
-                && (text.contains("变化") || text.contains("对比") || text.contains("比较") || text.contains("分析"));
-        if (!croplandIntent) {
+        boolean changeIntent = text.contains("变化") || text.contains("对比") || text.contains("比较") || text.contains("分析");
+        boolean croplandIntent = (text.contains("耕地") || text.contains("农田") || text.contains("cropland") || text.contains("farmland"))
+                && changeIntent;
+        boolean waterIntent = (text.contains("水体") || text.contains("水域") || text.contains("水面") || text.contains("湖面") || text.contains("water"))
+                && changeIntent
+                && (text.contains("面积") || text.contains("范围") || text.contains("变化") || text.contains("对比"));
+        if (!croplandIntent && !waterIntent) {
             return new ParsedIntent("unknown", "", null, null);
         }
 
@@ -149,31 +147,26 @@ public class LlmIntentTool {
                 end = YearMonth.of(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
             }
         }
-        return new ParsedIntent("cropland_change", place == null ? "" : place, start, end);
+        return new ParsedIntent(waterIntent ? "water_area_change" : "cropland_change", place, start, end);
     }
 
     private static String parsePlaceFallback(String text) {
-        // 去掉月份片段，避免把“月”误当成地名前缀的一部分（例如“月南京”）
-        String withoutMonth = text
+        String withoutDates = text
                 .replaceAll("(20\\d{2})\\s*年\\s*", " ")
                 .replaceAll("(1[0-2]|0?[1-9])\\s*月", " ");
 
-        String cleaned = withoutMonth
-                .replaceAll("[，。,.!?！？]", " ")
-                .replaceAll("(分析|比较|对比|变化|耕地面积|耕地|农田|从|到|之间|和|的|我要|请|帮我)", " ")
+        String cleaned = withoutDates
+                .replaceAll("[，。,.!?！？；;：:]", " ")
+                .replaceAll("(分析|比较|对比|变化|面积|范围|水体|水域|水面|湖面|耕地|农田|从|到|之间|和|的|我想|我要|请|帮我)", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
         Matcher m = PLACE_TOKEN.matcher(cleaned);
         if (m.find()) {
-            String place = m.group(1);
-            // 防御：若仍出现前缀“月”，去掉
-            if (place.startsWith("月") && place.length() > 2) {
-                return place.substring(1);
-            }
-            return place;
+            return m.group(1).replaceAll("^(月|年)", "");
         }
         return "";
     }
 
-    public record ParsedIntent(String intent, String place, YearMonth startMonth, YearMonth endMonth) {}
+    public record ParsedIntent(String intent, String place, YearMonth startMonth, YearMonth endMonth) {
+    }
 }

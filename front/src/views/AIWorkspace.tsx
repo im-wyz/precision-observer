@@ -165,6 +165,8 @@ function shouldRunMultiAgentAnalysis(text: string): boolean {
 function looksRoboflowFeatureInstruction(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed.length) return false;
+  if (looksWaterHighlightCommand(trimmed)) return false;
+  if (parseAreaCompareParamsFromText(trimmed)) return false;
   let t = trimmed.toLowerCase();
   try {
     t = t.normalize('NFKC');
@@ -657,7 +659,17 @@ type NormalizedChangeLayer = {
   tileMaxZoom?: number;
   tileMinZoom?: number;
 };
-type CroplandCompareParams = {
+type WaterHighlightResponse = {
+  query: string;
+  displayName: string;
+  minLng: number;
+  minLat: number;
+  maxLng: number;
+  maxLat: number;
+  token: string;
+  tileTemplateUrl: string;
+};
+type AreaCompareParams = {
   place: string;
   startYear: number;
   startMonth: number;
@@ -692,9 +704,11 @@ type RasterUploadResponse = {
   tileMinZoom?: number | null;
 };
 
-function parseCroplandCompareParamsFromText(text: string): CroplandCompareParams | null {
+function parseAreaCompareParamsFromText(text: string): AreaCompareParams | null {
   const normalized = text.trim();
-  if (!/耕地|农田|cropland|farmland/i.test(normalized) || !/变化|change/i.test(normalized)) return null;
+  const isCropland = /耕地|农田|cropland|farmland/i.test(normalized);
+  const isWater = /水体|水域|水面|湖面|湖泊|water/i.test(normalized);
+  if (!(isCropland || isWater) || !/变化|对比|change|compare/i.test(normalized)) return null;
 
   const dateMatch = normalized.match(/(\d{4})\s*年\s*(\d{1,2})\s*月.*?(\d{4})\s*年\s*(\d{1,2})\s*月/);
   if (!dateMatch) return null;
@@ -710,13 +724,43 @@ function parseCroplandCompareParamsFromText(text: string): CroplandCompareParams
   const beforeDates = normalized.slice(0, dateMatch.index ?? 0);
   const cleanPlace = (raw: string) =>
     raw
-      .replace(/分析|对比|监测|统计|一下|请|帮我|的|耕地.*$/g, '')
-      .replace(/[，。,.；;：:\s]/g, '')
+      .replace(/分析|对比|监测|统计|帮我|请|一下/g, '')
+      .replace(/的?(耕地|农田|水体|水域|水面|湖面|湖泊).*(面积|范围)?变化.*$/g, '')
+      .replace(/[，。,.、；;：:\s]/g, '')
       .trim();
   const place = cleanPlace(afterDates) || cleanPlace(beforeDates);
   if (!place) return null;
 
   return { place, startYear, startMonth, endYear, endMonth };
+}
+
+function isAreaChangeIntent(intent: unknown): boolean {
+  return intent === 'cropland_change' || intent === 'water_area_change';
+}
+
+function isAreaChangeSnapshot(snap: TaskRedisSnapshot): boolean {
+  return (
+    isAreaChangeIntent(snap.analysis_type) ||
+    isAreaChangeIntent(snap.analysis_intent) ||
+    Boolean(snap.change_layers) ||
+    Boolean(snap.cropland_data) ||
+    Boolean(snap.water_data)
+  );
+}
+
+function looksWaterHighlightCommand(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return false;
+  let t = trimmed.toLowerCase();
+  try {
+    t = t.normalize('NFKC');
+  } catch {
+    // ignore
+  }
+  return (
+    /(显示|高亮|标出|展示|show|highlight).*(水体|水域|水面|water)/i.test(t) ||
+    /(水体|水域|水面|water).*(显示|高亮|标出|展示|show|highlight)/i.test(t)
+  );
 }
 
 function ChartBubble({ option }: { option?: Record<string, unknown> }) {
@@ -794,6 +838,8 @@ export default function AIWorkspace({
 
   const boundaryMaskLeftEntitiesRef = useRef<Entity[]>([]);
   const boundaryMaskRightEntitiesRef = useRef<Entity[]>([]);
+  const waterHighlightStartLayerRef = useRef<ImageryLayer | null>(null);
+  const waterHighlightEndLayerRef = useRef<ImageryLayer | null>(null);
   const requestAbortRef = useRef<AbortController | null>(null);
   const draggingSplitRef = useRef(false);
   const [splitPercent, setSplitPercent] = useState<number>(50);
@@ -900,13 +946,13 @@ export default function AIWorkspace({
     const proxyPrefix = (envObj?.VITE_TITILER_PROXY_PREFIX || '/titiler-proxy').replace(/\/$/, '') || '/titiler-proxy';
     const springBase = rasterApiBase.replace(/\/$/, '');
 
-    if (template.startsWith('/api/live-imagery/tiles/')) {
+    if (template.startsWith('/api/live-imagery/tiles/') || template.startsWith('/api/water-highlight/tiles/')) {
       return `${springBase}${template}`;
     }
 
     try {
       const parsed = new URL(template);
-      if (parsed.pathname.includes('/api/live-imagery/tiles/')) {
+      if (parsed.pathname.includes('/api/live-imagery/tiles/') || parsed.pathname.includes('/api/water-highlight/tiles/')) {
         return template;
       }
       // 开发默认：同源 /titiler-proxy → vite 转发到 TiTiler（见 vite.config.ts）
@@ -982,6 +1028,31 @@ export default function AIWorkspace({
       tileTemplateUrl: `${rasterApiBase.replace(/\/$/, '')}${live.tileTemplateUrl}`,
       boundaries: Array.isArray(live.boundaries) ? live.boundaries : [],
     };
+  }
+
+  async function queryWaterHighlight(place: string, monthSelection: MonthSelection): Promise<WaterHighlightResponse> {
+    const queryText = place.trim();
+    if (!queryText) {
+      throw new Error('请输入地点名称');
+    }
+    const params = new URLSearchParams({
+      place: queryText,
+      year: String(monthSelection.year),
+      month: String(monthSelection.month),
+    });
+    const url = `${rasterApiBase.replace(/\/$/, '')}/api/water-highlight/by-place?${params.toString()}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      let errorMessage = '';
+      try {
+        const errorJson = (await res.json()) as ApiErrorResponse;
+        errorMessage = errorJson.message || '';
+      } catch {
+        // ignore parse failure
+      }
+      throw new Error(errorMessage || `水体边界生成失败: ${res.status}`);
+    }
+    return (await res.json()) as WaterHighlightResponse;
   }
 
   async function executeAiCommand(command: string): Promise<AgentChatResponse> {
@@ -1215,6 +1286,103 @@ export default function AIWorkspace({
       });
       boundaryMaskEntitiesRef.current.push(boundaryLine);
     }
+  }
+
+  function clearWaterHighlightLayer(viewer: Viewer | null, layerRef: { current: ImageryLayer | null }) {
+    if (!viewer || viewer.isDestroyed() || !layerRef.current) {
+      layerRef.current = null;
+      return;
+    }
+    try {
+      viewer.imageryLayers.remove(layerRef.current, true);
+    } catch {
+      // ignore
+    }
+    layerRef.current = null;
+    viewer.scene.requestRender();
+  }
+
+  function clearWaterHighlights(viewer: Viewer | null) {
+    clearWaterHighlightLayer(viewer, waterHighlightStartLayerRef);
+    clearWaterHighlightLayer(viewer, waterHighlightEndLayerRef);
+  }
+
+  function addWaterHighlightLayer(
+    viewer: Viewer,
+    highlight: WaterHighlightResponse,
+    layerRef: { current: ImageryLayer | null },
+    splitDirection: SplitDirection,
+    color: string,
+  ) {
+    clearWaterHighlightLayer(viewer, layerRef);
+    const safeExtent = sanitizeExtentDegrees({
+      minLng: highlight.minLng,
+      minLat: highlight.minLat,
+      maxLng: highlight.maxLng,
+      maxLat: highlight.maxLat,
+    });
+    const tileTemplate = `${rasterApiBase.replace(/\/$/, '')}${highlight.tileTemplateUrl}?color=${encodeURIComponent(
+      color,
+    )}&alpha=128`;
+    const provider = new UrlTemplateImageryProvider({
+      url: rewriteTileTemplateUrlForBrowser(tileTemplate),
+      tilingScheme: new WebMercatorTilingScheme(),
+      rectangle: Rectangle.fromDegrees(safeExtent.minLng, safeExtent.minLat, safeExtent.maxLng, safeExtent.maxLat),
+      tileWidth: 512,
+      tileHeight: 512,
+      minimumLevel: 0,
+      maximumLevel: 16,
+      enablePickFeatures: false,
+    });
+    const layer = new ImageryLayer(provider, {
+      alpha: 1.0,
+      splitDirection,
+    });
+    viewer.imageryLayers.add(layer);
+    const baseLayer = splitDirection === SplitDirection.LEFT ? imageryLayerLeftRef.current : imageryLayerRightRef.current;
+    if (baseLayer) {
+      try {
+        while (viewer.imageryLayers.indexOf(layer) > viewer.imageryLayers.indexOf(baseLayer) + 1) {
+          viewer.imageryLayers.lower(layer);
+        }
+      } catch {
+        // If layer ordering is not available, keep the overlay just above existing imagery.
+      }
+    }
+    layerRef.current = layer;
+    viewer.scene.requestRender();
+  }
+
+  async function showWaterHighlightsForCurrentComparison() {
+    const viewer = viewerLeftRef.current;
+    const ctx = croplandRestoreRef.current;
+    if (!viewer || viewer.isDestroyed()) {
+      throw new Error('地图尚未初始化');
+    }
+    if (!ctx) {
+      throw new Error('请先完成一次水体面积变化对比，再发送“显示水体”。');
+    }
+
+    const [start, end] = await Promise.all([
+      queryWaterHighlight(ctx.place, { year: ctx.startYear, month: ctx.startMonth }),
+      queryWaterHighlight(ctx.place, { year: ctx.endYear, month: ctx.endMonth }),
+    ]);
+    addWaterHighlightLayer(
+      viewer,
+      start,
+      waterHighlightStartLayerRef,
+      SplitDirection.LEFT,
+      '00e5ff',
+    );
+    addWaterHighlightLayer(
+      viewer,
+      end,
+      waterHighlightEndLayerRef,
+      SplitDirection.RIGHT,
+      'ff7a00',
+    );
+
+    return { ctx, start, end };
   }
 
   function removeImageryLayerFromViewer(viewer: Viewer, imageryLayerRef: { current: ImageryLayer | null }) {
@@ -1454,6 +1622,7 @@ export default function AIWorkspace({
 
     for (const l of baseLayersLeftRef.current) l.show = false;
     for (const l of baseLayersRightRef.current) l.show = false;
+    clearWaterHighlights(leftViewer);
     if (rightViewer) {
       removeImageryLayerFromAnyViewer(imageryLayerRightRef);
       clearBoundaryMask(rightViewer, boundaryMaskRightEntitiesRef);
@@ -1548,6 +1717,7 @@ export default function AIWorkspace({
         setSplitPercent(50);
         for (const l of baseLayersLeftRef.current) l.show = false;
         for (const l of baseLayersRightRef.current) l.show = false;
+        clearWaterHighlights(leftViewer);
         if (rightViewer) {
           removeImageryLayerFromAnyViewer(imageryLayerRightRef);
           clearBoundaryMask(rightViewer, boundaryMaskRightEntitiesRef);
@@ -1591,7 +1761,7 @@ export default function AIWorkspace({
       }
     }
 
-    const croplandData = snap.cropland_data;
+    const croplandData = snap.cropland_data || snap.water_data;
     if (croplandData && typeof croplandData === 'object') {
       const data = croplandData as Record<string, unknown>;
       const place = typeof data.place === 'string' ? data.place : '';
@@ -1665,6 +1835,7 @@ export default function AIWorkspace({
     if (left) {
       removeRoboflowOverlayFromViewer(left);
       clearRoboflowDetectionEntities(left);
+      clearWaterHighlights(left);
       removeImageryLayerFromViewer(left, imageryLayerLeftRef);
       clearBoundaryMask(left, boundaryMaskLeftEntitiesRef);
       left.scene.splitPosition = 1.0;
@@ -1704,8 +1875,8 @@ export default function AIWorkspace({
         [...state.messages]
           .reverse()
           .filter((m) => m.role === 'user')
-          .map((m) => parseCroplandCompareParamsFromText(m.text))
-          .find((v): v is CroplandCompareParams => v != null) ??
+          .map((m) => parseAreaCompareParamsFromText(m.text))
+          .find((v): v is AreaCompareParams => v != null) ??
         null;
 
       if ((state.analysisMode || restoredCropland) && restoredCropland) {
@@ -1836,6 +2007,7 @@ export default function AIWorkspace({
       }
       removeRoboflowOverlayFromViewer(leftViewer);
       clearRoboflowDetectionEntities(leftViewer);
+      clearWaterHighlights(leftViewer);
       clearBoundaryMask(leftViewer, boundaryMaskLeftEntitiesRef);
 
       setAnalysisMode(false);
@@ -1913,6 +2085,29 @@ export default function AIWorkspace({
 
     setChatInput('');
     setChatMessages((prev) => [...prev, { role: 'user', text }]);
+
+    if (looksWaterHighlightCommand(text)) {
+      try {
+        const result = await showWaterHighlightsForCurrentComparison();
+        const ym = (year: number, month: number) => `${year}-${String(month).padStart(2, '0')}`;
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            text:
+              `已添加两期水体低亮度高亮图层：${result.ctx.place} ` +
+              `${ym(result.ctx.startYear, result.ctx.startMonth)} 使用亮青色，` +
+              `${ym(result.ctx.endYear, result.ctx.endMonth)} 使用橙色。`,
+          },
+        ]);
+      } catch (e) {
+        setChatMessages((prev) => [
+          ...prev,
+          { role: 'assistant', text: e instanceof Error ? e.message : '水体边界高亮失败。' },
+        ]);
+      }
+      return;
+    }
 
     if (!lastUploadContextRef.current && isRoboflowIntent) {
       setChatMessages((prev) => [
@@ -2066,7 +2261,7 @@ export default function AIWorkspace({
 
       const loadCroplandFallbackFromUserText = async () => {
         if (multiAgentCroplandFallbackLoadedRef.current) return false;
-        const parsed = parseCroplandCompareParamsFromText(text);
+        const parsed = parseAreaCompareParamsFromText(text);
         if (!parsed) return false;
         multiAgentCroplandFallbackLoadedRef.current = true;
         setAnalysisMode(true);
@@ -2093,7 +2288,7 @@ export default function AIWorkspace({
           });
         },
         onSnapshot: (snap: TaskRedisSnapshot) => {
-          if (snap.analysis_type === 'cropland_change' || snap.analysis_intent === 'cropland_change' || snap.change_layers) {
+          if (isAreaChangeSnapshot(snap)) {
             void loadChangeLayersFromSnapshot(snap)
               .then((loaded) => {
                 if (loaded) multiAgentCameraFlewRef.current = true;
@@ -2146,7 +2341,7 @@ export default function AIWorkspace({
             chartOption: snap.chartOption,
             thinking: false,
           });
-          if (snap.analysis_type === 'cropland_change' || snap.analysis_intent === 'cropland_change' || snap.change_layers) {
+          if (isAreaChangeSnapshot(snap)) {
             void loadChangeLayersFromSnapshot(snap).catch((e) => {
               const msg = e instanceof Error ? e.message : String(e);
               console.warn('[cropland/change_layers]', msg);
@@ -2185,7 +2380,7 @@ export default function AIWorkspace({
     try {
       const result = await executeAiCommand(text);
 
-      const enableAnalysis = result.intent === 'cropland_change' && result.data;
+      const enableAnalysis = isAreaChangeIntent(result.intent) && result.data;
       setAnalysisMode(Boolean(enableAnalysis));
       if (enableAnalysis) setSplitPercent(50);
       // 仅耕地变化分屏分析时替换上传图层；其它聊天指令保留本地上传影像
@@ -2199,7 +2394,7 @@ export default function AIWorkspace({
       }
 
       // 如果是“耕地变化”，同时恢复加载影像底图（让原本的 Cesium 显示功能不丢）
-      if (result.intent === 'cropland_change' && result.data) {
+      if (isAreaChangeIntent(result.intent) && result.data) {
         const placeRaw = result.data['place'];
         const syRaw = result.data['startYear'];
         const smRaw = result.data['startMonth'];

@@ -192,7 +192,7 @@ def _run_gee_analysis_local(state: dict[str, Any], intent: str, task_id: str | N
 def director_node(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state["task_id"]
     intent = state.get("analysis_intent") or detect_analysis_intent(str(state.get("user_message") or ""))
-    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+    if intent in ("spectral_index", "cropland_change", "water_area_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
         output = (
             "1. 统一通过 Agent 任务链路执行；\n"
             "2. Engineer 优先调用 Spring 内部分析服务，先查本地多波段 COG；\n"
@@ -232,7 +232,7 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
         feedback += f"\nInspector：{state.get('inspector_output')}"
 
     intent = state.get("analysis_intent") or "general"
-    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+    if intent in ("spectral_index", "cropland_change", "water_area_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
         if intent == "spectral_index":
             output = (
                 "数据源策略：优先 E:/yaogandata 本地 Sentinel-2 SR 多波段 COG，命名优先 *_s2_sr_multiband_median.tif；"
@@ -290,7 +290,7 @@ def analyst_node(state: dict[str, Any]) -> dict[str, Any]:
 def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state["task_id"]
     intent = state.get("analysis_intent") or detect_analysis_intent(str(state.get("user_message") or ""))
-    if intent in ("spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
+    if intent in ("spectral_index", "cropland_change", "water_area_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"):
         return _engineer_node_spring_internal(state, intent)
 
     publish_progress(
@@ -390,7 +390,7 @@ def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
 def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[str, Any]:
     task_id = state["task_id"]
     is_index = intent == "spectral_index"
-    is_cropland = intent == "cropland_change"
+    is_cropland = intent in ("cropland_change", "water_area_change")
     tool_name = "spring_internal_index" if is_index else ("spring_agent_chat_cropland" if is_cropland else f"spring_internal_{intent}")
     publish_progress(
         task_id,
@@ -462,6 +462,7 @@ def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[s
         "metrics": data.get("metrics", {}),
         "chartOption": data.get("chartOption") or meta.get("chartOption"),
         "cropland_data": data.get("cropland_data") or meta.get("cropland_data"),
+        "water_data": data.get("water_data") or meta.get("water_data"),
         "change_layers": data.get("change_layers") or meta.get("change_layers"),
         "preprocess_steps": data.get("preprocess_steps") or meta.get("preprocess_steps"),
         "gdal_commands": data.get("gdal_commands") or meta.get("gdal_commands"),
@@ -489,6 +490,7 @@ def inspector_node(state: dict[str, Any]) -> dict[str, Any]:
     local_intents = {
         "spectral_index",
         "cropland_change",
+        "water_area_change",
         "composite",
         "threshold",
         "change_detection",

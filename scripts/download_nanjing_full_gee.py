@@ -61,26 +61,33 @@ def download(url: str, dest: Path) -> None:
     raise RuntimeError(f"下载失败：{last_error}") from last_error
 
 
-def collection_for(ee, start: str, end: str):
+def collection_for(ee, start: str, end: str, cloud_max: int):
     geom = ee.Geometry.Rectangle(REGION)
     return (
         ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
         .filterBounds(geom)
         .filterDate(start, end)
-        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 60))
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud_max))
     )
 
 
-def export_multiband(ee, year: int, scale: int) -> Path:
-    start = f"{year}-04-01"
-    end = f"{year}-06-30"
-    collection = collection_for(ee, start, end)
+def export_multiband(
+    ee,
+    year: int,
+    scale: int,
+    start: str,
+    end: str,
+    cloud_max: int,
+    filename_month: int,
+    filename_day: int,
+) -> Path:
+    collection = collection_for(ee, start, end, cloud_max)
     geom = ee.Geometry.Rectangle(REGION)
     count = int(collection.size().getInfo())
     if count == 0:
         raise RuntimeError(f"{year} 年 4-6 月未检索到 Sentinel-2 SR 影像")
 
-    image = collection.median().select(BANDS).unmask(0).toUint16().clip(geom)
+    image = collection.median().select(BANDS).unmask(0, False).toUint16().clip(geom)
     url = image.getDownloadURL(
         {
             "scale": scale,
@@ -89,21 +96,21 @@ def export_multiband(ee, year: int, scale: int) -> Path:
             "format": "GEO_TIFF",
         }
     )
-    dest = OUT_DIR / f"nanjing_{year}_04_06_s2_sr_multiband_median.tif"
+    dest = OUT_DIR / f"nanjing_{year}_{filename_month:02d}_{filename_day:02d}_s2_sr_multiband_median.tif"
     download(url, dest)
-    write_meta(dest, year, start, end, count, scale)
+    write_meta(dest, year, start, end, count, scale, cloud_max)
     print(f"multiband {year}: {dest} ({dest.stat().st_size} bytes, scenes={count}, scale={scale}m)")
     return dest
 
 
-def write_meta(dest: Path, year: int, start: str, end: str, count: int, scale: int) -> None:
+def write_meta(dest: Path, year: int, start: str, end: str, count: int, scale: int, cloud_max: int) -> None:
     meta = {
         "year": year,
         "start": start,
         "end": end,
         "image_count": count,
         "composite": "median",
-        "cloud_filter_percent": 60,
+        "cloud_filter_percent": cloud_max,
         "scale_m": scale,
         "bands": list(BANDS),
         "band_order_note": "b1=B4(red), b2=B8(nir), b3=B2(blue), b4=B3(green), b9=B11, b10=B12",
@@ -124,6 +131,11 @@ def parse_args() -> argparse.Namespace:
         default=int(os.getenv("NANJING_FULL_MULTIBAND_SCALE", "180")),
         help="导出分辨率，单位米；默认 180，数值越小文件越大且越容易触发 GEE 下载限制",
     )
+    parser.add_argument("--start", default=None, help="Override start date, for example 2018-01-01")
+    parser.add_argument("--end", default=None, help="Override end date, for example 2018-12-31")
+    parser.add_argument("--cloud-max", type=int, default=80, help="CLOUDY_PIXEL_PERCENTAGE upper bound")
+    parser.add_argument("--filename-month", type=int, default=5, help="Month embedded in output file name")
+    parser.add_argument("--filename-day", type=int, default=15, help="Day embedded in output file name")
     return parser.parse_args()
 
 
@@ -132,7 +144,16 @@ def main() -> None:
     ee = init_ee()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for year in args.years:
-        export_multiband(ee, year, scale=args.scale)
+        export_multiband(
+            ee,
+            year,
+            scale=args.scale,
+            start=args.start or f"{year}-04-01",
+            end=args.end or f"{year}-06-30",
+            cloud_max=args.cloud_max,
+            filename_month=args.filename_month,
+            filename_day=args.filename_day,
+        )
 
 
 if __name__ == "__main__":

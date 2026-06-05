@@ -104,13 +104,14 @@ public class LiveImageryService {
         if (query.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "地名不能为空");
         }
-        if (amapKey == null || amapKey.isBlank()) {
+        Bbox knownRegion = knownRegionBbox(query);
+        if (knownRegion == null && (amapKey == null || amapKey.isBlank())) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "高德 API Key 未配置");
         }
 
-        List<List<LngLat>> boundaries = districtBoundaryByAmap(query);
-        Bbox geocodeBbox = geocodeByAmap(query);
-        Bbox searchBbox = computeBboxFromBoundaries(geocodeBbox.displayName, boundaries);
+        List<List<LngLat>> boundaries = knownRegion != null ? bboxToBoundaries(knownRegion) : districtBoundaryByAmap(query);
+        Bbox geocodeBbox = knownRegion != null ? knownRegion : geocodeByAmap(query);
+        Bbox searchBbox = knownRegion != null ? knownRegion : computeBboxFromBoundaries(geocodeBbox.displayName, boundaries);
         if (searchBbox == null) {
             searchBbox = geocodeBbox;
         }
@@ -188,6 +189,7 @@ public class LiveImageryService {
                 0.0,
                 cogUrl,
                 cogUrl + "|bidx=1",
+                cogUrl + "|bidx=4",
                 cogUrl + "|bidx=2"
         );
         return new LiveImageryResult(
@@ -231,6 +233,7 @@ public class LiveImageryService {
                 "true_color",
                 0.0,
                 cogUrl,
+                "",
                 "",
                 ""
         );
@@ -292,6 +295,7 @@ public class LiveImageryService {
                     "true_color",
                     0.0,
                     cogUrl,
+                    "",
                     "",
                     ""
             );
@@ -556,7 +560,7 @@ public class LiveImageryService {
                 urls.add(c.cogUrl);
                 footprints.add(geometryToRingsLngLat(c.footprint));
                 scenes.add(new SelectedScene(
-                        c.itemId, c.collection, c.datetime, c.assetKey, c.cloudCover, c.cogUrl, c.redCogUrl, c.nirCogUrl
+                        c.itemId, c.collection, c.datetime, c.assetKey, c.cloudCover, c.cogUrl, c.redCogUrl, c.greenCogUrl, c.nirCogUrl
                 ));
             }
             return new FootprintSelection(urls, footprints, scenes, selected, coverageRatio);
@@ -579,6 +583,7 @@ public class LiveImageryService {
             String cogUrl,
             double cloudCover,
             String redCogUrl,
+            String greenCogUrl,
             String nirCogUrl,
             Geometry footprint
     ) {
@@ -599,6 +604,7 @@ public class LiveImageryService {
             AssetRef assetRef = extractCogAsset(feature.path("assets"));
             if (assetRef == null || assetRef.href == null || assetRef.href.isBlank()) continue;
             String redCogUrl = extractAssetHref(feature.path("assets"), "B04", "b04", "red");
+            String greenCogUrl = extractAssetHref(feature.path("assets"), "B03", "b03", "green");
             String nirCogUrl = extractAssetHref(feature.path("assets"), "B08", "b08", "nir");
 
             Geometry footprint = geoJsonToGeometry(feature.path("geometry"));
@@ -622,6 +628,7 @@ public class LiveImageryService {
                     assetRef.href,
                     cloudCover,
                     redCogUrl,
+                    greenCogUrl,
                     nirCogUrl,
                     footprint
             ));
@@ -929,6 +936,24 @@ public class LiveImageryService {
         return GEOMETRY_FACTORY.createPolygon(ring);
     }
 
+    private static List<List<LngLat>> bboxToBoundaries(Bbox bbox) {
+        return List.of(List.of(
+                new LngLat(bbox.minLng, bbox.minLat),
+                new LngLat(bbox.maxLng, bbox.minLat),
+                new LngLat(bbox.maxLng, bbox.maxLat),
+                new LngLat(bbox.minLng, bbox.maxLat),
+                new LngLat(bbox.minLng, bbox.minLat)
+        ));
+    }
+
+    private static Bbox knownRegionBbox(String query) {
+        String key = query == null ? "" : query.trim();
+        return switch (key) {
+            case "太湖" -> new Bbox("太湖", 119.70, 30.85, 120.70, 31.65);
+            default -> null;
+        };
+    }
+
     private static Geometry boundariesToMultiPolygon(List<List<LngLat>> boundaries) {
         if (boundaries == null || boundaries.isEmpty()) return null;
         List<Polygon> polys = new ArrayList<>();
@@ -1173,6 +1198,7 @@ public class LiveImageryService {
             double cloudCover,
             String cogUrl,
             String redCogUrl,
+            String greenCogUrl,
             String nirCogUrl
     ) {
     }

@@ -1,4 +1,4 @@
-"""调用 Spring 内部遥感分析服务的工具函数。"""
+"""Helpers for calling Spring remote-sensing analysis endpoints."""
 
 from __future__ import annotations
 
@@ -51,30 +51,46 @@ def run_spring_cropland_analysis(state: dict[str, Any]) -> dict[str, Any]:
     data = _post_json(f"{spring_base_url()}/api/agent/chat", {"message": message}, timeout_sec=_timeout())
     answer = str(data.get("answer") or data.get("message") or "")
     chart = data.get("chartOption") or data.get("option")
-    cropland_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    area_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    analysis_type = str(data.get("intent") or area_data.get("analysisKind") or "cropland_change")
+    if analysis_type == "water":
+        analysis_type = "water_area_change"
+    elif analysis_type == "cropland":
+        analysis_type = "cropland_change"
+
     metrics = {
         "source_kind": "local-cog",
         "chart_available": bool(chart),
-        "start_area_km2": cropland_data.get("startAreaKm2"),
-        "end_area_km2": cropland_data.get("endAreaKm2"),
-        "delta_area_km2": cropland_data.get("deltaAreaKm2"),
-        "delta_percent": cropland_data.get("deltaPercent"),
+        "start_area_km2": area_data.get("startAreaKm2"),
+        "end_area_km2": area_data.get("endAreaKm2"),
+        "delta_area_km2": area_data.get("deltaAreaKm2"),
+        "delta_percent": area_data.get("deltaPercent"),
     }
-    change_layers = _build_cropland_change_layers(cropland_data) if cropland_data else None
+    change_layers = _build_area_change_layers(area_data) if area_data else None
+    data_key = "water_data" if analysis_type == "water_area_change" else "cropland_data"
     return {
         "ok": bool(answer),
-        "analysis_type": "cropland_change",
+        "analysis_type": analysis_type,
         "source_kind": "local-cog",
         "download_url": "",
         "tile_url": "",
         "metrics": metrics,
-        "report_title": "耕地面积变化分析报告",
+        "report_title": "水体面积变化分析报告" if analysis_type == "water_area_change" else "耕地面积变化分析报告",
         "report_summary": answer,
-        "message": "耕地面积变化分析完成" if answer else "耕地面积变化分析未返回结果",
+        "message": ("水体面积变化分析完成" if analysis_type == "water_area_change" else "耕地面积变化分析完成")
+        if answer
+        else ("水体面积变化分析未返回结果" if analysis_type == "water_area_change" else "耕地面积变化分析未返回结果"),
         "chartOption": chart,
-        "cropland_data": cropland_data,
+        data_key: area_data,
+        "cropland_data": area_data,
         "change_layers": change_layers,
-        "meta": {"chartOption": chart, "cropland_data": cropland_data, "change_layers": change_layers, "spring_response": data},
+        "meta": {
+            "chartOption": chart,
+            data_key: area_data,
+            "cropland_data": area_data,
+            "change_layers": change_layers,
+            "spring_response": data,
+        },
     }
 
 
@@ -105,7 +121,7 @@ def _normalize_internal_response(data: dict[str, Any], analysis_type: str) -> di
         "message": data.get("message") or data.get("reportSummary") or "",
         "meta": meta,
     }
-    for key in ("chartOption", "cropland_data", "change_layers", "preprocess_steps", "gdal_commands"):
+    for key in ("chartOption", "cropland_data", "water_data", "change_layers", "preprocess_steps", "gdal_commands"):
         if key in extra:
             out[key] = extra[key]
     return out
@@ -120,9 +136,9 @@ def _post_json(url: str, payload: dict[str, Any], timeout_sec: int) -> dict[str,
             return json.loads(raw) if raw else {}
     except HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise RuntimeError(f"Spring 内部接口失败 {exc.code}: {raw[:1000]}") from exc
+        raise RuntimeError(f"Spring internal endpoint failed {exc.code}: {raw[:1000]}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Spring 内部接口不可达：{exc}") from exc
+        raise RuntimeError(f"Spring internal endpoint is unreachable: {exc}") from exc
 
 
 def _get_json(url: str, timeout_sec: int) -> dict[str, Any]:
@@ -133,18 +149,18 @@ def _get_json(url: str, timeout_sec: int) -> dict[str, Any]:
             return json.loads(raw) if raw else {}
     except HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise RuntimeError(f"Spring 内部接口失败 {exc.code}: {raw[:1000]}") from exc
+        raise RuntimeError(f"Spring internal endpoint failed {exc.code}: {raw[:1000]}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Spring 内部接口不可达：{exc}") from exc
+        raise RuntimeError(f"Spring internal endpoint is unreachable: {exc}") from exc
 
 
-def _build_cropland_change_layers(cropland_data: dict[str, Any]) -> dict[str, Any] | None:
-    place = str(cropland_data.get("place") or "").strip()
+def _build_area_change_layers(area_data: dict[str, Any]) -> dict[str, Any] | None:
+    place = str(area_data.get("place") or "").strip()
     try:
-        sy = int(cropland_data.get("startYear"))
-        sm = int(cropland_data.get("startMonth"))
-        ey = int(cropland_data.get("endYear"))
-        em = int(cropland_data.get("endMonth"))
+        sy = int(area_data.get("startYear"))
+        sm = int(area_data.get("startMonth"))
+        ey = int(area_data.get("endYear"))
+        em = int(area_data.get("endMonth"))
     except (TypeError, ValueError):
         return None
     if not place or not (1 <= sm <= 12 and 1 <= em <= 12):
@@ -162,7 +178,12 @@ def _query_live_layer(place: str, year: int, month: int) -> dict[str, Any]:
         tile = spring_base_url() + tile
     return {
         "tile_url": tile,
-        "extent": {"minLng": data.get("minLng"), "minLat": data.get("minLat"), "maxLng": data.get("maxLng"), "maxLat": data.get("maxLat")},
+        "extent": {
+            "minLng": data.get("minLng"),
+            "minLat": data.get("minLat"),
+            "maxLng": data.get("maxLng"),
+            "maxLat": data.get("maxLat"),
+        },
         "boundaries": data.get("boundaries") or [],
         "scene_id": ((data.get("selectedScenes") or [{}])[0] or {}).get("itemId", ""),
         "start_date": start,
@@ -192,7 +213,7 @@ def _extract_place(message: str) -> str:
     for place in ("南京", "太湖", "巢湖", "鄱阳湖", "苏州", "无锡", "上海", "北京"):
         if place in message:
             return place
-    m = re.search(r"([\u4e00-\u9fa5]{2,8})(?:市|区|县)?", message)
+    m = re.search(r"([\u4e00-\u9fa5]{2,8})(?:市|区|县|湖)?", message)
     return m.group(0) if m else ""
 
 

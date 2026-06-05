@@ -172,6 +172,7 @@ def _run_workflow(task_id: str, body: AnalyzeRequest) -> None:
             metrics=final.get("metrics"),
             chartOption=final.get("chartOption"),
             cropland_data=final.get("cropland_data"),
+            water_data=final.get("water_data"),
             change_layers=final.get("change_layers"),
             preprocess_steps=final.get("preprocess_steps"),
             gdal_commands=final.get("gdal_commands"),

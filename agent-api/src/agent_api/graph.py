@@ -47,6 +47,7 @@ class AnalysisState(TypedDict, total=False):
     metrics: dict[str, Any]
     chartOption: dict[str, Any]
     cropland_data: dict[str, Any]
+    water_data: dict[str, Any]
     change_layers: dict[str, Any]
     preprocess_steps: list[Any]
     gdal_commands: list[str]

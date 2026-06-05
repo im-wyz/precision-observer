@@ -27,7 +27,7 @@ def _llm_model() -> str:
 
 
 MAX_ANALYST_ROUNDS = int(os.getenv("MAX_ANALYST_ROUNDS", "5"))
-LOCAL_SPRING_INTENTS = {"spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"}
+LOCAL_SPRING_INTENTS = {"spectral_index", "cropland_change", "water_area_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"}
 
 
 def get_openai_client() -> OpenAI:
@@ -244,7 +244,7 @@ def engineer_node(state: dict[str, Any]) -> dict[str, Any]:
 def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[str, Any]:
     task_id = state["task_id"]
     is_index = intent == "spectral_index"
-    is_cropland = intent == "cropland_change"
+    is_cropland = intent in ("cropland_change", "water_area_change")
     msg = "Engineer：正在选择本地多波段 COG 并检查指数波段" if is_index else (
         "Engineer：正在调用内部耕地变化分析服务" if is_cropland else (
             "Engineer：正在生成影像基础预处理链路" if intent == "preprocess" else "Engineer：正在调用基础遥感处理服务"
@@ -306,6 +306,7 @@ def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[s
             "metrics": data.get("metrics", {}),
             "chartOption": data.get("chartOption") or meta.get("chartOption"),
             "cropland_data": data.get("cropland_data") or meta.get("cropland_data"),
+            "water_data": data.get("water_data") or meta.get("water_data"),
             "change_layers": data.get("change_layers") or meta.get("change_layers"),
             "preprocess_steps": data.get("preprocess_steps") or meta.get("preprocess_steps"),
             "gdal_commands": data.get("gdal_commands") or meta.get("gdal_commands"),
@@ -331,6 +332,7 @@ def _engineer_node_spring_internal(state: dict[str, Any], intent: str) -> dict[s
         "metrics": data.get("metrics", {}),
         "chartOption": data.get("chartOption") or meta.get("chartOption"),
         "cropland_data": data.get("cropland_data") or meta.get("cropland_data"),
+        "water_data": data.get("water_data") or meta.get("water_data"),
         "change_layers": data.get("change_layers") or meta.get("change_layers"),
         "preprocess_steps": data.get("preprocess_steps") or meta.get("preprocess_steps"),
         "gdal_commands": data.get("gdal_commands") or meta.get("gdal_commands"),
@@ -354,7 +356,7 @@ def inspector_node(state: dict[str, Any]) -> dict[str, Any]:
     publish_progress(task_id, "Inspector", msg)
 
     intent = str(state.get("analysis_intent") or "")
-    local_intents = {"spectral_index", "cropland_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"}
+    local_intents = {"spectral_index", "cropland_change", "water_area_change", "composite", "threshold", "change_detection", "catalog_check", "preprocess"}
     if intent in local_intents:
         inspector_pass = bool(state.get("engineer_ok") and state.get("report_summary"))
         reason = "本地基础遥感任务已返回报告与可展示结果。" if inspector_pass else "本地基础遥感任务缺少报告或 Engineer 未成功。"

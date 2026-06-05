@@ -90,6 +90,7 @@ public class LocalImageryArchiveService {
         String p = place == null ? "" : place.trim().toLowerCase(Locale.ROOT);
         return switch (p) {
             case "南京", "南京市" -> "nanjing";
+            case "太湖" -> "taihu";
             default -> p.replace("市", "");
         };
     }

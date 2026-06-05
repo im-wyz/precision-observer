@@ -10,12 +10,21 @@ import java.util.Map;
 
 @Service
 public class AgentChatService {
+    private static final String CROPLAND_CHANGE = "cropland_change";
+    private static final String WATER_AREA_CHANGE = "water_area_change";
+
     private final LlmIntentTool llmIntentTool;
     private final CroplandAnalysisService croplandAnalysisService;
+    private final WaterAreaAnalysisService waterAreaAnalysisService;
 
-    public AgentChatService(LlmIntentTool llmIntentTool, CroplandAnalysisService croplandAnalysisService) {
+    public AgentChatService(
+            LlmIntentTool llmIntentTool,
+            CroplandAnalysisService croplandAnalysisService,
+            WaterAreaAnalysisService waterAreaAnalysisService
+    ) {
         this.llmIntentTool = llmIntentTool;
         this.croplandAnalysisService = croplandAnalysisService;
+        this.waterAreaAnalysisService = waterAreaAnalysisService;
     }
 
     public AgentChatResponse handle(String message) {
@@ -25,21 +34,37 @@ public class AgentChatService {
         }
 
         LlmIntentTool.ParsedIntent intent = llmIntentTool.parseIntent(text);
-
-        if (!"cropland_change".equalsIgnoreCase(intent.intent())) {
+        if (!CROPLAND_CHANGE.equalsIgnoreCase(intent.intent()) && !WATER_AREA_CHANGE.equalsIgnoreCase(intent.intent())) {
             return AgentChatResponse.of(
-                    "当前已支持“耕地面积变化”分析。你可以这样说：分析2017年3月到2018年3月南京耕地面积变化。",
+                    "当前支持“耕地面积变化”和“水体面积变化”两期对比分析。例如：分析2024年5月到2024年8月太湖水体面积变化。",
                     "unsupported_intent",
                     null,
                     null
             );
         }
-
         if (intent.place() == null || intent.place().isBlank()) {
-            return AgentChatResponse.of("请先告诉我要分析的地区，例如：南京。", "missing_place", null, null);
+            return AgentChatResponse.of("请先告诉我要分析的地区，例如：南京、太湖。", "missing_place", null, null);
         }
         if (intent.startMonth() == null || intent.endMonth() == null) {
-            return AgentChatResponse.of("请给出两个时间点，例如：2017年3月到2018年3月。", "missing_time_range", null, null);
+            return AgentChatResponse.of("请给出两个时间点，例如：2024年5月到2024年8月。", "missing_time_range", null, null);
+        }
+
+        if (WATER_AREA_CHANGE.equalsIgnoreCase(intent.intent())) {
+            WaterAreaAnalysisService.WaterAreaChangeResult result = waterAreaAnalysisService.analyze(
+                    intent.place(),
+                    intent.startMonth(),
+                    intent.endMonth()
+            );
+            String answer = String.format(
+                    "%s 水体面积变化分析结果：%s 为 %.2f km²，%s 为 %.2f km²，变化 %.2f km²（%+.2f%%）。",
+                    result.place(),
+                    formatYm(result.startYear(), result.startMonth()), result.start().waterAreaKm2(),
+                    formatYm(result.endYear(), result.endMonth()), result.end().waterAreaKm2(),
+                    result.deltaAreaKm2(),
+                    result.deltaPercent()
+            );
+            answer += waterZeroHint(result);
+            return AgentChatResponse.of(answer, WATER_AREA_CHANGE, buildWaterChartOption(result), buildWaterData(result));
         }
 
         CroplandAnalysisService.CroplandChangeResult result = croplandAnalysisService.analyze(
@@ -58,37 +83,52 @@ public class AgentChatService {
         );
         answer += croplandZeroHint(result);
 
-        return AgentChatResponse.of(answer, "cropland_change", buildCroplandChartOption(result), buildData(result));
+        return AgentChatResponse.of(answer, CROPLAND_CHANGE, buildCroplandChartOption(result), buildCroplandData(result));
     }
 
     private Map<String, Object> buildCroplandChartOption(CroplandAnalysisService.CroplandChangeResult result) {
-        Map<String, Object> option = new LinkedHashMap<>();
+        return buildAreaChartOption(
+                result.place() + " 耕地面积变化",
+                "耕地面积",
+                List.of(result.start().croplandAreaKm2(), result.end().croplandAreaKm2()),
+                formatYm(result.startYear(), result.startMonth()),
+                formatYm(result.endYear(), result.endMonth()),
+                "#4F46E5"
+        );
+    }
 
-        option.put("title", Map.of(
-                "text", result.place() + " 耕地面积变化",
-                "left", "center"
-        ));
+    private Map<String, Object> buildWaterChartOption(WaterAreaAnalysisService.WaterAreaChangeResult result) {
+        return buildAreaChartOption(
+                result.place() + " 水体面积变化",
+                "水体面积",
+                List.of(result.start().waterAreaKm2(), result.end().waterAreaKm2()),
+                formatYm(result.startYear(), result.startMonth()),
+                formatYm(result.endYear(), result.endMonth()),
+                "#0EA5E9"
+        );
+    }
+
+    private Map<String, Object> buildAreaChartOption(
+            String title,
+            String seriesName,
+            List<Double> data,
+            String startLabel,
+            String endLabel,
+            String color
+    ) {
+        Map<String, Object> option = new LinkedHashMap<>();
+        option.put("title", Map.of("text", title, "left", "center"));
         option.put("tooltip", Map.of("trigger", "axis"));
-        option.put("xAxis", Map.of(
-                "type", "category",
-                "data", List.of(
-                        formatYm(result.startYear(), result.startMonth()),
-                        formatYm(result.endYear(), result.endMonth())
-                )
-        ));
-        option.put("yAxis", Map.of(
-                "type", "value",
-                "name", "面积 (km²)"
-        ));
+        option.put("xAxis", Map.of("type", "category", "data", List.of(startLabel, endLabel)));
+        option.put("yAxis", Map.of("type", "value", "name", "面积 (km²)"));
 
         Map<String, Object> series = new LinkedHashMap<>();
-        series.put("name", "耕地面积");
+        series.put("name", seriesName);
         series.put("type", "bar");
         series.put("barWidth", "40%");
-        series.put("data", List.of(result.start().croplandAreaKm2(), result.end().croplandAreaKm2()));
-        series.put("itemStyle", Map.of("color", "#4F46E5"));
+        series.put("data", data);
+        series.put("itemStyle", Map.of("color", color));
         option.put("series", List.of(series));
-
         option.put("grid", Map.of("left", "8%", "right", "6%", "bottom", "12%", "containLabel", true));
         return option;
     }
@@ -97,9 +137,6 @@ public class AgentChatService {
         return year + "-" + String.format("%02d", month);
     }
 
-    /**
-     * 双期为 0 时区分「无有效 NDVI 像素」（多为 TiTiler/瓦片问题）与「有像素但 NDVI 未落在阈值内」。
-     */
     private static String croplandZeroHint(CroplandAnalysisService.CroplandChangeResult result) {
         if (result.start().croplandAreaKm2() > 0 || result.end().croplandAreaKm2() > 0) {
             return "";
@@ -107,24 +144,91 @@ public class AgentChatService {
         double sAdmin = result.start().adminAreaKm2();
         double eAdmin = result.end().adminAreaKm2();
         if (sAdmin <= 1e-6 && eAdmin <= 1e-6) {
-            return " 说明：两期均未统计到有效 NDVI 像素（常见为 TiTiler 不可达或 live.titiler.base-url 配置不对，瓦片请求失败被静默忽略；STAC 检索仍会完成故整体耗时可能不长）。请确认 TiTiler 进程可用且后端能访问该地址。";
+            return " 说明：两期均未统计到有效 NDVI 像素，请确认 TiTiler 可用、波段影像可访问。";
         }
-        return " 说明：行政区内有 NDVI 像素，但落在当前耕地 NDVI 区间 [analysis.cropland.ndvi-min, ndvi-max] 内的面积为 0（例如冬季裸地 NDVI 偏低、或城区占比高）。可在 application.properties 中适当放宽阈值后重试。";
+        return " 说明：行政区内有有效像素，但落在当前耕地 NDVI 阈值区间内的面积为 0。";
     }
 
-    private Map<String, Object> buildData(CroplandAnalysisService.CroplandChangeResult result) {
+    private static String waterZeroHint(WaterAreaAnalysisService.WaterAreaChangeResult result) {
+        if (result.start().waterAreaKm2() > 0 || result.end().waterAreaKm2() > 0) {
+            return "";
+        }
+        double sArea = result.start().analysisAreaKm2();
+        double eArea = result.end().analysisAreaKm2();
+        if (sArea <= 1e-6 && eArea <= 1e-6) {
+            return " 说明：两期均未统计到有效 NDWI 像素，请确认 TiTiler 可用、绿光/NIR 波段影像可访问。";
+        }
+        return " 说明：区域内有有效像素，但 NDWI 未达到当前水体阈值。";
+    }
+
+    private Map<String, Object> buildCroplandData(CroplandAnalysisService.CroplandChangeResult result) {
+        Map<String, Object> data = buildCommonData(
+                "cropland",
+                result.place(),
+                result.startYear(),
+                result.startMonth(),
+                result.endYear(),
+                result.endMonth(),
+                result.start().croplandAreaKm2(),
+                result.end().croplandAreaKm2(),
+                result.deltaAreaKm2(),
+                result.deltaPercent(),
+                result.start().coverageRatio(),
+                result.end().coverageRatio()
+        );
+        data.put("analysisAreaStartKm2", result.start().adminAreaKm2());
+        data.put("analysisAreaEndKm2", result.end().adminAreaKm2());
+        return data;
+    }
+
+    private Map<String, Object> buildWaterData(WaterAreaAnalysisService.WaterAreaChangeResult result) {
+        Map<String, Object> data = buildCommonData(
+                "water",
+                result.place(),
+                result.startYear(),
+                result.startMonth(),
+                result.endYear(),
+                result.endMonth(),
+                result.start().waterAreaKm2(),
+                result.end().waterAreaKm2(),
+                result.deltaAreaKm2(),
+                result.deltaPercent(),
+                result.start().coverageRatio(),
+                result.end().coverageRatio()
+        );
+        data.put("ndwiMin", result.ndwiMin());
+        data.put("analysisAreaStartKm2", result.start().analysisAreaKm2());
+        data.put("analysisAreaEndKm2", result.end().analysisAreaKm2());
+        return data;
+    }
+
+    private Map<String, Object> buildCommonData(
+            String analysisKind,
+            String place,
+            int startYear,
+            int startMonth,
+            int endYear,
+            int endMonth,
+            double startAreaKm2,
+            double endAreaKm2,
+            double deltaAreaKm2,
+            double deltaPercent,
+            double coverageStart,
+            double coverageEnd
+    ) {
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("place", result.place());
-        data.put("startYear", result.startYear());
-        data.put("startMonth", result.startMonth());
-        data.put("endYear", result.endYear());
-        data.put("endMonth", result.endMonth());
-        data.put("startAreaKm2", result.start().croplandAreaKm2());
-        data.put("endAreaKm2", result.end().croplandAreaKm2());
-        data.put("deltaAreaKm2", result.deltaAreaKm2());
-        data.put("deltaPercent", result.deltaPercent());
-        data.put("coverageStart", result.start().coverageRatio());
-        data.put("coverageEnd", result.end().coverageRatio());
+        data.put("analysisKind", analysisKind);
+        data.put("place", place);
+        data.put("startYear", startYear);
+        data.put("startMonth", startMonth);
+        data.put("endYear", endYear);
+        data.put("endMonth", endMonth);
+        data.put("startAreaKm2", startAreaKm2);
+        data.put("endAreaKm2", endAreaKm2);
+        data.put("deltaAreaKm2", deltaAreaKm2);
+        data.put("deltaPercent", deltaPercent);
+        data.put("coverageStart", coverageStart);
+        data.put("coverageEnd", coverageEnd);
         return data;
     }
 

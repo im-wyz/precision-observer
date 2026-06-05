@@ -19,6 +19,7 @@ ANALYSIS_LABELS = {
     "cyanobacteria": "蓝藻/藻华",
     "spectral_index": "光谱指数",
     "cropland_change": "耕地面积变化",
+    "water_area_change": "\u6c34\u4f53\u9762\u79ef\u53d8\u5316",
     "ndci": "NDCI 植被-水体指数",
     "water": "水体监测",
     "general": "综合遥感分析",
